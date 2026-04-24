@@ -1,0 +1,8 @@
+/target
+debug.log
+build.log
+log/
+.ruff_cache
+*.pdb
+lib/libIME2
+*.md

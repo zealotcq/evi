@@ -1,0 +1,13 @@
+{
+  "vad_model_dir": "F:\\data\\modelscope\\models\\iic\\speech_fsmn_vad_zh-cn-16k-common-onnx",
+  "asr_model_dir": "F:\\data\\modelscope\\models\\iic\\speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx",
+  "llm_model_dir": "F:\\data\\modelscope\\models\\onnx-community\\Qwen2___5-0___5B-Instruct",
+  "punc_model_dir": "F:\\data\\modelscope\\models\\iic\\punc_ct-transformer_zh-cn-common-vocab272727-onnx",
+  "min_refine_length": 5,
+  "refine_db_path": "refine_log.db",
+  "max_refine_ratio": 1.3,
+  "save_log": false,
+  "debug": false,
+  "llm_refine": false,
+  "refine_fallback": ["嗯","呃"]
+}
