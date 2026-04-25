@@ -27,7 +27,6 @@ use vi::engine::paraformer::AsrEngine;
 use vi::engine::punc::PuncEngine;
 use vi::engine::debug_refine::DebugRefine;
 use vi::TokenScore;
-#[cfg(feature = "llm-refine")]
 use vi::engine::llm::LlmEngine;
 use vi::engine::segmenter::segment_audio;
 use vi::engine::vad::VadEngine;
@@ -82,7 +81,6 @@ struct Session {
 }
 
 enum RefineEngine {
-    #[cfg(feature = "llm-refine")]
     Llm(Box<Mutex<LlmEngine>>),
     Fallback(FallbackRefineEngine),
 }
@@ -104,7 +102,6 @@ impl Session {
         let punc = PuncEngine::new(&punc_dir)?;
 
         let db = DebugRefine::open(&cfg.refine_db_path)?;
-        #[cfg(feature = "llm-refine")]
         let refine = if cfg.llm_refine {
             debug!("Loading LLM model...");
             let engine = LlmEngine::new(cfg)?;
@@ -112,8 +109,6 @@ impl Session {
         } else {
             RefineEngine::Fallback(FallbackRefineEngine::new(cfg.refine_fallback.clone()))
         };
-        #[cfg(not(feature = "llm-refine"))]
-        let refine = RefineEngine::Fallback(FallbackRefineEngine::new(cfg.refine_fallback.clone()));
 
         if cfg.save_log {
             let log_dir = PathBuf::from("log");
@@ -155,7 +150,6 @@ impl Session {
         let asr = AsrEngine::new(&asr_dir)?;
 
         let db = DebugRefine::open(&cfg.refine_db_path)?;
-        #[cfg(feature = "llm-refine")]
         let refine = if cfg.llm_refine {
             debug!("Loading LLM model...");
             let engine = LlmEngine::new(cfg)?;
@@ -163,7 +157,6 @@ impl Session {
         } else {
             RefineEngine::Fallback(FallbackRefineEngine::new(cfg.refine_fallback.clone()))
         };
-        #[cfg(not(feature = "llm-refine"))]
         let refine = RefineEngine::Fallback(FallbackRefineEngine::new(cfg.refine_fallback.clone()));
 
         if cfg.save_log {
@@ -338,7 +331,6 @@ impl Session {
         self.overlay.show();
 
         let (refined_text, llm_tokens) = match &self.refine {
-            #[cfg(feature = "llm-refine")]
             RefineEngine::Llm(engine) => {
                 let db = self.db.lock();
                 match engine.lock().refine(&full_text, &db) {
@@ -680,7 +672,6 @@ fn main() -> Result<()> {
                 if let Some(ps) = state {
                     let sess = session_rebuild_holder.lock().clone();
                     if let Some(sess) = sess {
-                        #[cfg(feature = "llm-refine")]
                         if let RefineEngine::Llm(engine) = &sess.refine {
                             match engine
                                 .lock()
@@ -1031,7 +1022,6 @@ fn main() -> Result<()> {
                 needs_rebuild_hook.store(false, Ordering::SeqCst);
                 let state = prompt_state_hook.lock().take();
                 if let Some(ps) = state {
-                    #[cfg(feature = "llm-refine")]
                     if let RefineEngine::Llm(engine) = &session_hook.refine {
                         match engine.lock().rebuild_prompt(&ps.system_prompt, &ps.prefill_template) {
                             Ok(()) => info!("LLM prompt rebuilt successfully"),

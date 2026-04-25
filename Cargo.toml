@@ -2,13 +2,12 @@
 name = "vi"
 version = "0.1.0"
 edition = "2021"
-description = "Voice Input Method - cross-platform voice input with clipboard injection"
+description = "Evolution Voice Input Method"
 
 [features]
-default = ["mac"]
+default = []
 refine-log = []
 correction = []
-llm-refine = []
 mac = ["dep:tao", "dep:tray-icon", "dep:muda", "dep:rdev", "dep:enigo", "dep:core-graphics", "dep:core-foundation"]
 
 [dependencies]
