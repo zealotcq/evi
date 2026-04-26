@@ -40,8 +40,6 @@ impl CozeRefineEngine {
         let workflow_id = crate::secret::get_workflow_id()
             .ok_or_else(|| anyhow::anyhow!("Coze Workflow ID not configured"))?;
 
-        info!("Coze refine: workflow_id={}", workflow_id);
-
         debug!(
             "CozeRefine: sending '{}' (timeout={}s)",
             text,
@@ -81,7 +79,7 @@ impl CozeRefineEngine {
             bail!("Coze returned empty response");
         }
 
-        let _ = fs::write("result.json", &resp_body);
+        //let _ = fs::write("result.json", &resp_body);
 
         let output = parse_sse_output(&resp_body)?;
         if output.trim().is_empty() {
@@ -195,21 +193,10 @@ fn extract_output_from_data(data_json: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-pub fn coze_refine_with_fallback(text: &str, max_ratio: f64, timeout_secs: u64) -> String {
+pub fn coze_refine_with_fallback(text: &str, timeout_secs: u64) -> String {
     let engine = CozeRefineEngine::new(timeout_secs);
     match engine.refine(text) {
-        Ok(refined) => {
-            let text_chars = text.chars().count();
-            let refined_chars = refined.chars().count();
-            if text_chars > 0 && (refined_chars as f64) > (text_chars as f64) * max_ratio {
-                warn!(
-                    "CozeRefine: reject (refined chars={} > {} * {}), using original",
-                    refined_chars, text_chars, max_ratio
-                );
-                return text.to_string();
-            }
-            refined
-        }
+        Ok(refined) => refined,
         Err(e) => {
             warn!("CozeRefine failed: {}, using original text", e);
             text.to_string()

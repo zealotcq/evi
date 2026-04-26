@@ -22,18 +22,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use vi::audio::cpal_source::CpalAudioSource;
 use vi::engine::correction::FileCorrectionStore;
-use vi::engine::coze_refine::coze_refine_with_fallback;
 use vi::engine::debug_refine::DebugRefine;
-use vi::engine::fallback::FallbackRefineEngine;
-use vi::engine::llm::LlmEngine;
 use vi::engine::paraformer::AsrEngine;
 use vi::engine::punc::PuncEngine;
 use vi::engine::segmenter::segment_audio;
 use vi::engine::vad::VadEngine;
+use vi::refine_mgr::RefineManager;
 use vi::ui::log_capture::CaptureLogger;
-#[cfg(not(target_os = "macos"))]
 use vi::ui::PromptState;
-use vi::TokenScore;
 use vi::*;
 
 #[cfg(target_os = "windows")]
@@ -68,9 +64,8 @@ struct Session {
     text_session: Mutex<vi::text::PlatformTextSession>,
     vad: Mutex<VadEngine>,
     asr: Mutex<AsrEngine>,
-    punc: Mutex<PuncEngine>,
     dr: Mutex<DebugRefine>,
-    refine: RefineEngine,
+    refine_mgr: Mutex<RefineManager>,
     correction: FileCorrectionStore,
     recording: AtomicBool,
     #[cfg(target_os = "windows")]
@@ -78,14 +73,6 @@ struct Session {
     results: Mutex<Vec<SegmentResult>>,
     audio_seq: AtomicU64,
     save_log: bool,
-    trailing_punct: String,
-    coze_refine_timeout: u64,
-    max_refine_ratio: f64,
-}
-
-enum RefineEngine {
-    Llm(Box<Mutex<LlmEngine>>),
-    Fallback(FallbackRefineEngine),
 }
 
 impl Session {
@@ -104,13 +91,7 @@ impl Session {
         let punc = PuncEngine::new(&punc_dir)?;
 
         let db = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
-        let refine = if cfg.llm_refine {
-            debug!("Loading LLM model...");
-            let engine = LlmEngine::new(cfg)?;
-            RefineEngine::Llm(Box::new(Mutex::new(engine)))
-        } else {
-            RefineEngine::Fallback(FallbackRefineEngine::new(cfg.refine_fallback.clone()))
-        };
+        let refine_mgr = RefineManager::new(cfg, punc)?;
 
         if cfg.save_log {
             let log_dir = PathBuf::from("log");
@@ -128,18 +109,14 @@ impl Session {
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
             asr: Mutex::new(asr),
-            punc: Mutex::new(punc),
             dr: Mutex::new(db),
-            refine,
+            refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
             overlay,
             results: Mutex::new(Vec::new()),
             audio_seq: AtomicU64::new(1),
             save_log: cfg.save_log,
-            trailing_punct: cfg.trailing_punct.clone(),
-            coze_refine_timeout: cfg.coze_refine_timeout,
-            max_refine_ratio: cfg.max_refine_ratio,
         })
     }
 
@@ -158,13 +135,7 @@ impl Session {
         let punc = PuncEngine::new(&punc_dir)?;
 
         let db = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
-        let refine = if _cfg.llm_refine {
-            debug!("Loading LLM model...");
-            let engine = LlmEngine::new(_cfg)?;
-            RefineEngine::Llm(Box::new(Mutex::new(engine)))
-        } else {
-            RefineEngine::Fallback(FallbackRefineEngine::new(_cfg.refine_fallback.clone()))
-        };
+        let refine_mgr = RefineManager::new(_cfg, punc)?;
 
         if _cfg.save_log {
             let log_dir = PathBuf::from("log");
@@ -219,17 +190,13 @@ impl Session {
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
             asr: Mutex::new(asr),
-            punc: Mutex::new(punc),
             dr: Mutex::new(db),
-            refine,
+            refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
             results: Mutex::new(Vec::new()),
             audio_seq: AtomicU64::new(1),
-            save_log: cfg.save_log,
-            trailing_punct: cfg.trailing_punct.clone(),
-            coze_refine_timeout: cfg.coze_refine_timeout,
-            max_refine_ratio: cfg.max_refine_ratio,
+            save_log: _cfg.save_log,
         })
     }
 
@@ -339,60 +306,12 @@ impl Session {
         #[cfg(target_os = "windows")]
         self.overlay.show();
 
-        let (refined_text, llm_tokens) = if vi::ui::get_coze_refine_enabled() {
-            let refined = coze_refine_with_fallback(
-                &full_text,
-                self.max_refine_ratio,
-                self.coze_refine_timeout,
-            );
-            if refined != full_text {
-                let dr = self.dr.lock();
-                dr.log_refine(&full_text, &refined);
-                log_event("COZE_REFINED", &format!("{} | {}", full_text, refined));
-            }
-            (refined, Vec::<TokenScore>::new())
-        } else {
-            match &self.refine {
-                RefineEngine::Llm(engine) => {
-                    let dr = self.dr.lock();
-                    match engine.lock().refine(&full_text, &dr) {
-                        Ok((refined, tokens)) => {
-                            debug!("LLM refined: '{}' -> '{}'", full_text, refined);
-                            log_event("LLM_REFINED", &format!("{} | {}", full_text, refined));
-                            (refined, tokens)
-                        }
-                        Err(e) => {
-                            warn!("LLM refinement failed: {e}, using raw ASR output");
-                            (full_text, vec![])
-                        }
-                    }
-                }
-                RefineEngine::Fallback(engine) => {
-                    let dr = self.dr.lock();
-                    let filtered = engine.refine(&full_text, &dr);
-                    if filtered != full_text {
-                        log_event("FALLBACK_FILTER", &format!("{} | {}", full_text, filtered));
-                    }
-                    (filtered, Vec::<TokenScore>::new())
-                }
-            }
-        };
+        let dr = self.dr.lock();
+        let (final_text, llm_tokens) = self.refine_mgr.lock().refine(&full_text, &dr);
 
-        let final_text = match self.punc.lock().add_punct(&refined_text) {
-            Ok(punct_text) => {
-                debug!("Punc added: '{}' -> '{}'", refined_text, punct_text);
-                log_event("PUNC_ADDED", &format!("{} | {}", refined_text, punct_text));
-                punct_text
-            }
-            Err(e) => {
-                warn!("Punc failed: {e}, using raw text");
-                refined_text
-            }
-        };
-
-        let final_text = self.ensure_trailing_punct(&final_text);
-
-        {
+        debug!("Refined: {}", final_text);
+        log_event("REFINE_COMPLETE", &final_text);
+        if self.save_log  {
             use serde_json::json;
             let segments_json: Vec<_> = self
                 .results
@@ -430,7 +349,7 @@ impl Session {
                 "segments": segments_json,
                 "llm_tokens": llm_tokens_json,
             });
-            if self.save_log {
+            {
                 if let Err(e) = std::fs::write(
                     &asr_result_path,
                     serde_json::to_string_pretty(&result_json).unwrap(),
@@ -446,16 +365,6 @@ impl Session {
         if let Err(e) = self.text_session.lock().commit_text(&final_text) {
             error!("Failed to inject text: {e}");
         }
-    }
-
-    fn ensure_trailing_punct(&self, text: &str) -> String {
-        let punct = ",.:?!;，。？！：";
-        if let Some(ch) = text.chars().last() {
-            if punct.contains(ch) {
-                return text.to_string();
-            }
-        }
-        format!("{}{}", text, self.trailing_punct)
     }
 
     fn check_corrections(&self) {
@@ -697,14 +606,13 @@ fn main() -> Result<()> {
                 if let Some(ps) = state {
                     let sess = session_rebuild_holder.lock().clone();
                     if let Some(sess) = sess {
-                        if let RefineEngine::Llm(engine) = &sess.refine {
-                            match engine
-                                .lock()
-                                .rebuild_prompt(&ps.system_prompt, &ps.prefill_template)
-                            {
-                                Ok(()) => info!("LLM prompt rebuilt successfully"),
-                                Err(e) => error!("LLM prompt rebuild failed: {}", e),
-                            }
+                        match sess
+                            .refine_mgr
+                            .lock()
+                            .rebuild_llm_prompt(&ps.system_prompt, &ps.prefill_template)
+                        {
+                            Ok(()) => info!("LLM prompt rebuilt successfully"),
+                            Err(e) => error!("LLM prompt rebuild failed: {}", e),
                         }
                     }
                 }
@@ -1068,14 +976,13 @@ fn main() -> Result<()> {
                 needs_rebuild_hook.store(false, Ordering::SeqCst);
                 let state = prompt_state_hook.lock().take();
                 if let Some(ps) = state {
-                    if let RefineEngine::Llm(engine) = &session_hook.refine {
-                        match engine
-                            .lock()
-                            .rebuild_prompt(&ps.system_prompt, &ps.prefill_template)
-                        {
-                            Ok(()) => info!("LLM prompt rebuilt successfully"),
-                            Err(e) => error!("LLM prompt rebuild failed: {}", e),
-                        }
+                    match session_hook
+                        .refine_mgr
+                        .lock()
+                        .rebuild_llm_prompt(&ps.system_prompt, &ps.prefill_template)
+                    {
+                        Ok(()) => info!("LLM prompt rebuilt successfully"),
+                        Err(e) => error!("LLM prompt rebuild failed: {}", e),
                     }
                 }
             }

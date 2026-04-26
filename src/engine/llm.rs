@@ -601,18 +601,8 @@ impl LlmEngine {
         };
 
         let refined = refined.trim();
-        let refined_chars = refined.chars().count();
-        let text_chars = text.chars().count();
 
         db.log_refine(text, refined);
-
-        if (refined_chars as f64) > (text_chars as f64) * self.max_refine_ratio {
-            info!(
-                "LLM: reject (refined chars={} >= {} * {}), output: '{}'",
-                refined_chars, text_chars, self.max_refine_ratio, text
-            );
-            return Ok((text.to_string(), vec![]));
-        }
 
         debug!("LLM: refined output: '{}'", refined);
         Ok((refined.to_string(), tokens))

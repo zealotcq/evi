@@ -24,6 +24,7 @@ pub mod audio;
 pub mod engine;
 pub mod models;
 pub mod overlay;
+pub mod refine_mgr;
 pub mod secret;
 pub mod text;
 pub mod ui;
@@ -226,9 +227,9 @@ pub struct Config {
     pub refine_db_path: Option<String>,
     #[serde(default = "default_max_refine_ratio")]
     pub max_refine_ratio: f64,
-    #[serde(default= "default_false")]
+    #[serde(default = "default_false")]
     pub save_log: bool,
-    #[serde(default= "default_false")]
+    #[serde(default = "default_false")]
     pub debug: bool,
     #[serde(default = "default_active_scheme")]
     pub active_scheme: Option<String>,
