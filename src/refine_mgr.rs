@@ -6,12 +6,13 @@ use crate::ui;
 use crate::Config;
 use crate::TokenScore;
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::{info, warn};
 use parking_lot::Mutex;
 
 pub struct RefineManager {
     fallback: FallbackRefineEngine,
     punc: Mutex<PuncEngine>,
+    punc_enabled: bool,
     llm: Option<LlmEngine>,
     llm_remote: Option<crate::LlmRemoteConfig>,
     min_refine_length: usize,
@@ -32,6 +33,7 @@ impl RefineManager {
         Ok(Self {
             fallback,
             punc: Mutex::new(punc),
+            punc_enabled: cfg.punc_enabled,
             llm,
             llm_remote: cfg.llm_remote.clone(),
             min_refine_length: cfg.min_refine_length,
@@ -123,9 +125,12 @@ impl RefineManager {
 
     fn fallback_refine_with_punc(&self, text: &str, db: &DebugRefine) -> String {
         let filtered = self.fallback.refine(text, db);
+        if !self.punc_enabled {
+            return filtered;
+        }
         match self.punc.lock().add_punct(&filtered) {
             Ok(punct_text) => {
-                debug!("RefineMgr: punc added: '{}' -> '{}'", filtered, punct_text);
+                info!("RefineMgr: punc added: '{}' -> '{}'", filtered, punct_text);
                 punct_text
             }
             Err(e) => {
@@ -136,6 +141,12 @@ impl RefineManager {
     }
 
     fn ensure_trailing_punct(&self, text: &str) -> String {
+        let text_chars = text.chars().count();
+        if text_chars <= self.min_refine_length {
+            return text.to_string();
+        }
+
+
         let punct = ",.:?!;，。？！：";
         if let Some(ch) = text.chars().last() {
             if punct.contains(ch) {

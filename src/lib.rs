@@ -267,11 +267,13 @@ pub struct Config {
     pub llm_remote: Option<LlmRemoteConfig>,
     #[serde(default)]
     pub llm_remote_enabled: bool,
+    #[serde(default = "default_true")]
+    pub punc_enabled: bool,
 }
 
-// fn default_true() -> bool {
-//     true
-// }
+fn default_true() -> bool {
+    true
+}
 fn default_false() -> bool {
     false
 }

@@ -6,7 +6,6 @@ pub mod win32;
 #[cfg(target_os = "macos")]
 pub mod macos_tray;
 
-use egui::ViewportCommand;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -353,10 +352,8 @@ impl eframe::App for ViApp {
             });
         });
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        if !self.debug {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false)); // 隐藏窗口
-            ctx.send_viewport_cmd(ViewportCommand::Minimized(true)); // 最小化窗口
+        if self.debug {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
