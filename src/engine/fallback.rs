@@ -12,7 +12,7 @@ impl FallbackRefineEngine {
         Self { remove_words }
     }
 
-    pub fn refine(&self, text: &str, db: &DebugRefine) -> String {
+    pub fn refine(&self, text: &str, dr: &DebugRefine) -> String {
         let mut result = text.to_string();
         for word in &self.remove_words {
             result = result.replace(word, "");
@@ -20,7 +20,7 @@ impl FallbackRefineEngine {
         if result != text {
             info!("FallbackRefine: '{}' -> '{}'", text, result);
         }
-        db.log_refine(text, &result);
+        dr.log_refine(text, &result);
         result
     }
 }

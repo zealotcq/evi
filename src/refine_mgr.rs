@@ -54,14 +54,14 @@ impl RefineManager {
         }
     }
 
-    pub fn refine(&self, text: &str, db: &DebugRefine) -> (String, Vec<TokenScore>) {
+    pub fn refine(&self, text: &str, dr: &DebugRefine) -> (String, Vec<TokenScore>) {
         let text = text.trim();
         if text.is_empty() {
             return (text.to_string(), vec![]);
         }
 
         let original_chars = text.chars().count();
-        let refined = self.do_refine(text, db);
+        let refined = self.do_refine(text, dr);
         let refined_chars = refined.chars().count();
 
         let refined = if (refined_chars as f64) > (original_chars as f64) * self.max_refine_ratio {
@@ -78,11 +78,11 @@ impl RefineManager {
         (refined, vec![])
     }
 
-    fn do_refine(&self, text: &str, db: &DebugRefine) -> String {
+    fn do_refine(&self, text: &str, dr: &DebugRefine) -> String {
         let text_chars = text.chars().count();
 
         if text_chars <= self.min_refine_length {
-            return self.fallback_refine_with_punc(text, db);
+            return self.fallback_refine_with_punc(text, dr);
         }
 
         if ui::get_llm_remote_enabled() {
@@ -95,7 +95,7 @@ impl RefineManager {
                     cfg.max_tokens_ratio,
                 );
                 if refined != text {
-                    db.log_refine(text, &refined);
+                    dr.log_refine(text, &refined);
                     info!("RefineMgr: LlmRemote refined '{}' -> '{}'", text, refined);
                 }
                 return refined;
@@ -103,7 +103,7 @@ impl RefineManager {
         }
 
         if let Some(ref llm) = self.llm {
-            match llm.refine(text, db) {
+            match llm.refine(text, dr) {
                 Ok((refined, _tokens)) => {
                     if refined != text {
                         info!("RefineMgr: LLM refined '{}' -> '{}'", text, refined);
@@ -115,16 +115,16 @@ impl RefineManager {
                         "RefineMgr: LLM failed: {}, falling back to fallback+punc",
                         e
                     );
-                    return self.fallback_refine_with_punc(text, db);
+                    return self.fallback_refine_with_punc(text, dr);
                 }
             }
         }
 
-        self.fallback_refine_with_punc(text, db)
+        self.fallback_refine_with_punc(text, dr)
     }
 
-    fn fallback_refine_with_punc(&self, text: &str, db: &DebugRefine) -> String {
-        let filtered = self.fallback.refine(text, db);
+    fn fallback_refine_with_punc(&self, text: &str, dr: &DebugRefine) -> String {
+        let filtered = self.fallback.refine(text, dr);
         if !self.punc_enabled {
             return filtered;
         }
