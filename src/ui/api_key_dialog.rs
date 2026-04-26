@@ -20,22 +20,3 @@ pub fn request_api_key_dialog() {
         DIALOG_OPEN.store(false, Ordering::SeqCst);
     });
 }
-
-pub fn request_workflow_id_dialog() {
-    if DIALOG_OPEN
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-
-    std::thread::spawn(move || {
-        let wid = crate::ui::win32::show_workflow_id_dialog();
-        if let Some(w) = wid {
-            if !w.is_empty() {
-                crate::secret::save_workflow_id(&w);
-            }
-        }
-        DIALOG_OPEN.store(false, Ordering::SeqCst);
-    });
-}

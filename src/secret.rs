@@ -3,20 +3,12 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 
 static API_KEY: Mutex<Option<String>> = Mutex::new(None);
-static WORKFLOW_ID: Mutex<Option<String>> = Mutex::new(None);
 
 fn config_file_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".evi_key")
-}
-
-fn workflow_file_path() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".evi_wfid")
 }
 
 fn xor_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
@@ -69,24 +61,10 @@ pub fn load_key() {
             }
         }
     }
-
-    let wf_path = workflow_file_path();
-    if wf_path.exists() {
-        if let Ok(s) = std::fs::read_to_string(&wf_path) {
-            let wid = s.trim().to_string();
-            if !wid.is_empty() {
-                *WORKFLOW_ID.lock() = Some(wid);
-            }
-        }
-    }
 }
 
 pub fn get_api_key() -> Option<String> {
     API_KEY.lock().clone()
-}
-
-pub fn get_workflow_id() -> Option<String> {
-    WORKFLOW_ID.lock().clone()
 }
 
 pub fn save_key(key: &str) {
@@ -107,13 +85,4 @@ pub fn save_key(key: &str) {
     let _ = std::fs::write(&path, &hex);
     *API_KEY.lock() = Some(key.to_string());
     info!("secret: API key saved");
-}
-
-pub fn save_workflow_id(wid: &str) {
-    if wid.is_empty() {
-        return;
-    }
-    let _ = std::fs::write(workflow_file_path(), wid);
-    *WORKFLOW_ID.lock() = Some(wid.to_string());
-    info!("secret: workflow_id saved");
 }

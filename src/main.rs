@@ -311,7 +311,7 @@ impl Session {
 
         debug!("Refined: {}", final_text);
         log_event("REFINE_COMPLETE", &final_text);
-        if self.save_log  {
+        if self.save_log {
             use serde_json::json;
             let segments_json: Vec<_> = self
                 .results
@@ -485,6 +485,13 @@ fn main() -> Result<()> {
     info!("EVI Voice Input Method starting...");
 
     vi::secret::load_key();
+
+    if let Ok(cfg) = Config::load() {
+        if cfg.llm_remote_enabled {
+            vi::ui::set_llm_remote(true);
+            info!("Restored llm_remote_enabled from config");
+        }
+    }
 
     {
         use windows::core::PCWSTR;
@@ -866,11 +873,11 @@ fn main() -> Result<()> {
         if event.id == quit_id {
             let _ = menu_proxy.send_event(MacEvent::Quit);
         } else if event.id == coze_id {
-            let current = vi::ui::get_coze_refine_enabled();
+            let current = vi::ui::get_llm_remote_enabled();
             if !current && vi::secret::get_api_key().is_none() {
                 vi::ui::api_key_dialog::request_api_key_dialog();
             } else {
-                vi::ui::set_coze_refine(!current);
+                vi::ui::set_llm_remote(!current);
             }
         }
     }));

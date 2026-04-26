@@ -5,5 +5,10 @@
   "save_log": false,
   "debug": false,
   "llm_refine": false,
-  "refine_fallback": ["嗯","呃"]
+  "refine_fallback": ["嗯","呃"],
+  "llm_remote": {
+    "url": "https://open.bigmodel.cn/api/paas/v4/",
+    "model": "glm-4.5-flash",
+    "timeout": 5
+  }
 }

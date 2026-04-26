@@ -9,7 +9,6 @@ const ID_TIMER_HIDE: usize = 2001;
 const ID_TRAY_SHOW: usize = 1001;
 const ID_TRAY_COZE_REFINE: usize = 1003;
 const ID_TRAY_SET_KEY: usize = 1004;
-const ID_TRAY_SET_WORKFLOW: usize = 1005;
 const ID_TRAY_EXIT: usize = 1002;
 
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
@@ -125,18 +124,14 @@ unsafe extern "system" fn subclass_wndproc(
                     let _ = SetForegroundWindow(hwnd);
                 }
                 ID_TRAY_COZE_REFINE => {
-                    let has_coze_key = crate::secret::get_api_key().is_some();
-                    let has_wf_id = crate::secret::get_workflow_id().is_some();
-                    if has_coze_key && has_wf_id {
-                        let enabled = !crate::ui::get_coze_refine_enabled();
-                        crate::ui::set_coze_refine(enabled);
+                    let has_api_key = crate::secret::get_api_key().is_some();
+                    if has_api_key {
+                        let enabled = !crate::ui::get_llm_remote_enabled();
+                        crate::ui::set_llm_remote(enabled);
                     }
                 }
                 ID_TRAY_SET_KEY => {
                     crate::ui::api_key_dialog::request_api_key_dialog();
-                }
-                ID_TRAY_SET_WORKFLOW => {
-                    crate::ui::api_key_dialog::request_workflow_id_dialog();
                 }
                 ID_TRAY_EXIT => {
                     SHOULD_EXIT.store(true, Ordering::SeqCst);
@@ -181,12 +176,11 @@ unsafe fn show_tray_menu(hwnd: HWND) {
 
     let refine_text: Vec<u16> = "网络大模型润色\0".encode_utf16().collect();
     let refine_ptr = PCWSTR(refine_text.as_ptr());
-    let refine_checked = crate::ui::get_coze_refine_enabled();
-    let has_coze_key = crate::secret::get_api_key().is_some();
-    let has_wf_id = crate::secret::get_workflow_id().is_some();
-    let coze_enabled = has_coze_key && has_wf_id;
+    let refine_checked = crate::ui::get_llm_remote_enabled();
+    let has_api_key = crate::secret::get_api_key().is_some();
+    let llm_remote_enabled = has_api_key;
 
-    if !coze_enabled {
+    if !llm_remote_enabled {
         let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_TRAY_COZE_REFINE, refine_ptr);
     } else if refine_checked {
         let _ = AppendMenuW(
@@ -199,20 +193,14 @@ unsafe fn show_tray_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_TRAY_COZE_REFINE, refine_ptr);
     }
 
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
     let set_key_text: Vec<u16> = "设置 API Key\0".encode_utf16().collect();
     let _ = AppendMenuW(
         menu,
         MF_STRING,
         ID_TRAY_SET_KEY,
         PCWSTR(set_key_text.as_ptr()),
-    );
-
-    let set_wf_text: Vec<u16> = "设置 Workflow ID\0".encode_utf16().collect();
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING,
-        ID_TRAY_SET_WORKFLOW,
-        PCWSTR(set_wf_text.as_ptr()),
     );
 
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -259,65 +247,7 @@ pub unsafe fn find_main_window() -> Option<HWND> {
 
 pub fn show_api_key_dialog() -> Option<String> {
     let title: Vec<u16> = "输入 API Key\0".encode_utf16().collect();
-    let prompt: Vec<u16> = "请将 Coze API Key (pat_...) 粘贴到剪贴板，然后点确定\0"
-        .encode_utf16()
-        .collect();
-
-    unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::*;
-        let _ = MessageBoxW(
-            None,
-            windows::core::PCWSTR(prompt.as_ptr()),
-            windows::core::PCWSTR(title.as_ptr()),
-            MB_OKCANCEL | MB_ICONQUESTION,
-        );
-    }
-
-    unsafe fn get_clipboard_text() -> Option<String> {
-        use windows::Win32::Foundation::HGLOBAL;
-        use windows::Win32::System::DataExchange::{
-            CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-        };
-        use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
-
-        if OpenClipboard(None).is_err() {
-            return None;
-        }
-        if IsClipboardFormatAvailable(13u32).is_err() {
-            let _ = CloseClipboard();
-            return None;
-        }
-        let handle = match GetClipboardData(13u32) {
-            Ok(h) => h,
-            Err(_) => {
-                let _ = CloseClipboard();
-                return None;
-            }
-        };
-        let hglobal = HGLOBAL(handle.0 as *mut _);
-        let ptr = GlobalLock(hglobal);
-        if ptr.is_null() {
-            let _ = GlobalUnlock(hglobal);
-            let _ = CloseClipboard();
-            return None;
-        }
-        let size = GlobalSize(hglobal) as usize / 2;
-        let len = (0..size)
-            .take_while(|&i| *(ptr as *const u16).add(i) != 0)
-            .count();
-        let slice = std::slice::from_raw_parts(ptr as *const u16, len);
-        let text = String::from_utf16_lossy(slice);
-        let _ = GlobalUnlock(hglobal);
-        let _ = CloseClipboard();
-        Some(text.trim().to_string())
-    }
-
-    unsafe { get_clipboard_text() }
-}
-
-pub fn show_workflow_id_dialog() -> Option<String> {
-    let title: Vec<u16> = "输入 Workflow ID\0".encode_utf16().collect();
-    let prompt: Vec<u16> = "请将 Coze Workflow ID 粘贴到剪贴板，然后点确定\0"
+    let prompt: Vec<u16> = "请将 API Key 复制到剪贴板，然后点确定\0"
         .encode_utf16()
         .collect();
 

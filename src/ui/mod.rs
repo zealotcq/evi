@@ -21,14 +21,17 @@ pub static HOOK_CHANNEL: parking_lot::Mutex<Option<crossbeam_channel::Sender<boo
 pub static HOOK_CHANNEL: std::sync::Mutex<Option<crossbeam_channel::Sender<bool>>> =
     std::sync::Mutex::new(None);
 
-pub static USE_COZE_REFINE: AtomicBool = AtomicBool::new(false);
+pub static USE_LLM_REMOTE: AtomicBool = AtomicBool::new(false);
 
-pub fn get_coze_refine_enabled() -> bool {
-    USE_COZE_REFINE.load(Ordering::SeqCst)
+pub fn get_llm_remote_enabled() -> bool {
+    USE_LLM_REMOTE.load(Ordering::SeqCst)
 }
 
-pub fn set_coze_refine(enabled: bool) {
-    USE_COZE_REFINE.store(enabled, Ordering::SeqCst);
+pub fn set_llm_remote(enabled: bool) {
+    USE_LLM_REMOTE.store(enabled, Ordering::SeqCst);
+    if let Err(e) = crate::Config::save_llm_remote_enabled(enabled) {
+        log::warn!("Failed to save llm_remote_enabled: {}", e);
+    }
 }
 
 pub struct Scheme {

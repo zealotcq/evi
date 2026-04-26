@@ -206,6 +206,34 @@ fn get_exe_dir() -> Result<PathBuf> {
 }
 
 #[derive(Deserialize, Clone)]
+pub struct LlmRemoteConfig {
+    #[serde(default = "default_llm_remote_url")]
+    pub url: String,
+    #[serde(default = "default_llm_remote_model")]
+    pub model: String,
+    #[serde(default = "default_llm_remote_timeout")]
+    pub timeout: u64,
+    #[serde(default = "default_llm_remote_max_tokens_ratio")]
+    pub max_tokens_ratio: f64,
+}
+
+fn default_llm_remote_url() -> String {
+    "https://api.openai.com/v1/chat/completions".to_string()
+}
+
+fn default_llm_remote_model() -> String {
+    "gpt-3.5-turbo".to_string()
+}
+
+fn default_llm_remote_timeout() -> u64 {
+    30
+}
+
+fn default_llm_remote_max_tokens_ratio() -> f64 {
+    1.2
+}
+
+#[derive(Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub model_base_dir: Option<String>,
@@ -235,8 +263,10 @@ pub struct Config {
     pub active_scheme: Option<String>,
     #[serde(default = "default_trailing_punct")]
     pub trailing_punct: String,
-    #[serde(default = "default_coze_refine_timeout")]
-    pub coze_refine_timeout: u64,
+    #[serde(default)]
+    pub llm_remote: Option<LlmRemoteConfig>,
+    #[serde(default)]
+    pub llm_remote_enabled: bool,
 }
 
 // fn default_true() -> bool {
@@ -259,9 +289,6 @@ fn default_active_scheme() -> Option<String> {
 }
 fn default_trailing_punct() -> String {
     ",".to_string()
-}
-fn default_coze_refine_timeout() -> u64 {
-    5
 }
 
 impl Config {
@@ -318,6 +345,30 @@ impl Config {
                 "active_scheme".to_string(),
                 Value::String(scheme_name.to_string()),
             );
+        }
+        let out =
+            serde_json::to_string_pretty(&json).with_context(|| "Failed to serialize config")?;
+        std::fs::write(&config_path, out)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+        Ok(())
+    }
+
+    pub fn save_llm_remote_enabled(enabled: bool) -> Result<()> {
+        let config_path = Self::home_config_path();
+        if !config_path.exists() {
+            let exe_dir = get_exe_dir()?;
+            let exe_path = exe_dir.join("config.json");
+            if exe_path.exists() {
+                let raw = std::fs::read_to_string(&exe_path)?;
+                let _ = std::fs::write(&config_path, &raw);
+            }
+        }
+        let raw = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+        let mut json: Value = serde_json::from_str(&raw)
+            .with_context(|| format!("Failed to parse {}", config_path.display()))?;
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("llm_remote_enabled".to_string(), Value::Bool(enabled));
         }
         let out =
             serde_json::to_string_pretty(&json).with_context(|| "Failed to serialize config")?;

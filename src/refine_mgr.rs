@@ -13,7 +13,7 @@ pub struct RefineManager {
     fallback: FallbackRefineEngine,
     punc: Mutex<PuncEngine>,
     llm: Option<LlmEngine>,
-    coze_refine_timeout: u64,
+    llm_remote: Option<crate::LlmRemoteConfig>,
     min_refine_length: usize,
     max_refine_ratio: f64,
     trailing_punct: String,
@@ -33,7 +33,7 @@ impl RefineManager {
             fallback,
             punc: Mutex::new(punc),
             llm,
-            coze_refine_timeout: cfg.coze_refine_timeout,
+            llm_remote: cfg.llm_remote.clone(),
             min_refine_length: cfg.min_refine_length,
             max_refine_ratio: cfg.max_refine_ratio,
             trailing_punct: cfg.trailing_punct.clone(),
@@ -83,16 +83,21 @@ impl RefineManager {
             return self.fallback_refine_with_punc(text, db);
         }
 
-        if ui::get_coze_refine_enabled() {
-            let refined = crate::engine::coze_refine::coze_refine_with_fallback(
-                text,
-                self.coze_refine_timeout,
-            );
-            if refined != text {
-                db.log_refine(text, &refined);
-                info!("RefineMgr: Coze refined '{}' -> '{}'", text, refined);
+        if ui::get_llm_remote_enabled() {
+            if let Some(ref cfg) = self.llm_remote {
+                let refined = crate::engine::llm_remote::llm_remote_refine_with_fallback(
+                    text,
+                    &cfg.url,
+                    &cfg.model,
+                    cfg.timeout,
+                    cfg.max_tokens_ratio,
+                );
+                if refined != text {
+                    db.log_refine(text, &refined);
+                    info!("RefineMgr: LlmRemote refined '{}' -> '{}'", text, refined);
+                }
+                return refined;
             }
-            return refined;
         }
 
         if let Some(ref llm) = self.llm {
