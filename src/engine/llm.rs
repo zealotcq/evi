@@ -576,7 +576,7 @@ impl LlmEngine {
         })
     }
 
-    pub fn refine(&self, text: &str, db: &DebugRefine) -> Result<(String, Vec<TokenScore>)> {
+    pub fn refine(&self, text: &str, dr: &DebugRefine) -> Result<(String, Vec<TokenScore>)> {
         let text = text.trim();
         if text.is_empty() {
             return Ok((text.to_string(), vec![]));
@@ -602,7 +602,7 @@ impl LlmEngine {
 
         let refined = refined.trim();
 
-        db.log_refine(text, refined);
+        dr.log_refine(text, refined);
 
         debug!("LLM: refined output: '{}'", refined);
         Ok((refined.to_string(), tokens))
@@ -1033,7 +1033,7 @@ mod tests {
             "system prompt cache should not be empty"
         );
 
-        let db = crate::engine::debug_refine::DebugRefine::open(":memory:").unwrap();
+        let dr = crate::engine::debug_refine::DebugRefine::open(":memory:").unwrap();
         let cases = vec![
             ("嗯我的那个嗯肚子有点疼", true),
             ("我们现在来测试一下", true),
@@ -1043,7 +1043,7 @@ mod tests {
 
         for (i, (input, expect_nontrivial)) in cases.iter().enumerate() {
             eprintln!("--- Case {}: '{}' ---", i + 1, input);
-            let (refined, _tokens) = engine.refine(input, &db).unwrap();
+            let (refined, _tokens) = engine.refine(input, &dr).unwrap();
             eprintln!("    -> '{}'", refined);
 
             assert!(

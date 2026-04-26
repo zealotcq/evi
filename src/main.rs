@@ -85,7 +85,7 @@ impl Session {
         debug!("Loading Punc model from {}...", punc_dir.display());
         let punc = PuncEngine::new(&punc_dir)?;
 
-        let db = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
+        let dr = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
         let refine_mgr = RefineManager::new(cfg, punc)?;
 
         if cfg.save_log {
@@ -103,7 +103,7 @@ impl Session {
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
             asr: Mutex::new(asr),
-            dr: Mutex::new(db),
+            dr: Mutex::new(dr),
             refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
@@ -127,7 +127,7 @@ impl Session {
         debug!("Loading Punc model from {}...", punc_dir.display());
         let punc = PuncEngine::new(&punc_dir)?;
 
-        let db = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
+        let dr = DebugRefine::open(crate::models::refine_db_path().to_str().unwrap())?;
         let refine_mgr = RefineManager::new(_cfg, punc)?;
 
         if _cfg.save_log {
@@ -614,9 +614,10 @@ fn main() -> Result<()> {
     });
 
     let session_load = session_holder.clone();
-    let cfg_load = cfg.clone();
+    let mut cfg_load = cfg.clone();
     std::thread::spawn(move || {
         info!("Loading models...");
+        crate::models::ensure_model_dir(&mut cfg_load);
         match Session::new(&cfg_load) {
             Ok(session) => {
                 *session_load.lock() = Some(Arc::new(session));

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use egui::ViewportCommand;
 
 #[cfg(target_os = "windows")]
 pub static HOOK_CHANNEL: parking_lot::Mutex<Option<crossbeam_channel::Sender<bool>>> =
@@ -354,6 +355,10 @@ impl eframe::App for ViApp {
 
         if self.debug {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        else {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false)); // 隐藏窗口
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true)); // 最小化窗口
         }
     }
 
