@@ -23,11 +23,26 @@ pub fn base_dir(cfg: &crate::Config) -> std::path::PathBuf {
 }
 
 pub fn default_base_dir() -> std::path::PathBuf {
-    std::env::var("MODELSCOPE_CACHE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            crate::Config::exe_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        })
+    if let Ok(val) = std::env::var("MODELSCOPE_CACHE") {
+        let p = std::path::PathBuf::from(&val);
+        if REQUIRED_MODEL_SUBDIRS
+            .iter()
+            .all(|sub| has_onnx_model(&p.join(sub)))
+        {
+            return p;
+        }
+    }
+
+    for candidate in modelscope_cache_candidates() {
+        if REQUIRED_MODEL_SUBDIRS
+            .iter()
+            .all(|sub| has_onnx_model(&candidate.join(sub)))
+        {
+            return candidate;
+        }
+    }
+
+    crate::Config::exe_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 pub fn refine_db_path() -> std::path::PathBuf {

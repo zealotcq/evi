@@ -29,6 +29,7 @@ use vi::engine::segmenter::segment_audio;
 use vi::engine::vad::VadEngine;
 use vi::refine_mgr::RefineManager;
 use vi::ui::log_capture::CaptureLogger;
+#[cfg(not(target_os = "macos"))]
 use vi::ui::PromptState;
 use vi::*;
 
@@ -183,7 +184,7 @@ impl Session {
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
             asr: Mutex::new(asr),
-            dr: Mutex::new(db),
+            dr: Mutex::new(dr),
             refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
@@ -806,6 +807,7 @@ enum MacEvent {
     KeyDown,
     KeyUp,
     ProcessingDone,
+    UpdateTray,
     Quit,
 }
 
@@ -829,7 +831,6 @@ fn main() -> Result<()> {
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
     use tray_icon::menu::{MenuEvent, MenuItem};
-    use tray_icon::TrayIconEvent;
 
     let log_buffer: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     vi::ui::log_capture::init_log_capture(log_buffer.clone());
@@ -840,9 +841,19 @@ fn main() -> Result<()> {
 
     info!("EVI Voice Input Method starting (macOS)...");
 
-    let cfg = Config::load()?;
+    vi::secret::load_key();
+
+    if let Ok(cfg) = Config::load() {
+        if cfg.llm_remote_enabled {
+            vi::ui::set_llm_remote(true);
+            info!("Restored llm_remote_enabled from config");
+        }
+    }
+
+    let mut cfg = Config::load()?;
 
     info!("Loading models...");
+    crate::models::ensure_model_dir(&mut cfg);
     let session = Arc::new(Session::new(&cfg)?);
     info!("All models loaded.");
 
@@ -852,8 +863,20 @@ fn main() -> Result<()> {
 
     let quit_item = MenuItem::new("退出", true, None);
     let quit_id = quit_item.id().clone();
-    let coze_refine_item = MenuItem::new("网络大模型润色", false, None);
+    let coze_refine_item = MenuItem::new("网络大模型润色", true, None);
     let coze_id = coze_refine_item.id().clone();
+    let set_key_item = MenuItem::new("设置 API Key", true, None);
+    let set_key_id = set_key_item.id().clone();
+
+    let tray: Arc<MacTray> = Arc::new(
+        MacTray::new(quit_item, coze_refine_item, set_key_item)
+            .map_err(|e| anyhow::anyhow!("Failed to create tray: {}", e))?,
+    );
+
+    {
+        let has_key = vi::secret::get_api_key().is_some();
+        tray.update_coze_refine(vi::ui::get_llm_remote_enabled(), has_key);
+    }
 
     let menu_proxy = proxy.clone();
     MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
@@ -866,13 +889,12 @@ fn main() -> Result<()> {
             } else {
                 vi::ui::set_llm_remote(!current);
             }
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == set_key_id {
+            vi::ui::api_key_dialog::request_api_key_dialog();
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         }
     }));
-
-    TrayIconEvent::set_event_handler(Some(move |_event| {}));
-
-    let _tray = MacTray::new(quit_item, coze_refine_item)
-        .map_err(|e| anyhow::anyhow!("Failed to create tray: {}", e))?;
 
     let cg_proxy: Arc<Mutex<Option<tao::event_loop::EventLoopProxy<MacEvent>>>> =
         Arc::new(Mutex::new(Some(proxy.clone())));
@@ -920,8 +942,13 @@ fn main() -> Result<()> {
                 }
             }
 
-            Event::UserEvent(MacEvent::ProcessingDone) => {
-                processing = false;
+            Event::UserEvent(MacEvent::ProcessingDone) | Event::UserEvent(MacEvent::UpdateTray) => {
+                if let Event::UserEvent(MacEvent::ProcessingDone) = event {
+                    processing = false;
+                }
+                let has_key = vi::secret::get_api_key().is_some();
+                let enabled = vi::ui::get_llm_remote_enabled();
+                tray.update_coze_refine(enabled, has_key);
             }
 
             Event::UserEvent(MacEvent::Quit) => {

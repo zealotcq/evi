@@ -4,18 +4,22 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub struct MacTray {
     #[allow(dead_code)]
     tray: TrayIcon,
+    coze_refine_item: MenuItem,
 }
 
 impl MacTray {
     pub fn new(
         quit_item: MenuItem,
         coze_refine_item: MenuItem,
+        set_key_item: MenuItem,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let icon = load_icon();
 
         let menu = Menu::new();
         menu.append_items(&[
             &coze_refine_item,
+            &PredefinedMenuItem::separator(),
+            &set_key_item,
             &PredefinedMenuItem::separator(),
             &quit_item,
         ])?;
@@ -26,10 +30,27 @@ impl MacTray {
             .with_icon(icon)
             .build()?;
 
-        Ok(Self { tray })
+        Ok(Self {
+            tray,
+            coze_refine_item,
+        })
     }
 
     pub fn set_state(&self, _state: TrayDisplayState) {}
+
+    pub fn update_coze_refine(&self, enabled: bool, has_api_key: bool) {
+        if has_api_key {
+            let _ = self.coze_refine_item.set_enabled(true);
+            let _ = self.coze_refine_item.set_text(if enabled {
+                "✓ 网络大模型润色"
+            } else {
+                "网络大模型润色"
+            });
+        } else {
+            let _ = self.coze_refine_item.set_text("网络大模型润色（需设置 API Key）");
+            let _ = self.coze_refine_item.set_enabled(false);
+        }
+    }
 }
 
 pub enum TrayDisplayState {

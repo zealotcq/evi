@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="0.1.0"
+VERSION="2.0.0"
 PKG_NAME="evi-${VERSION}-macos-x86_64"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_DIR="${SCRIPT_DIR}/target/release"
@@ -26,6 +26,8 @@ chmod +x "${APP_DIR}/Contents/MacOS/vi"
 # config + icon -> MacOS/ (vi looks for these relative to exe)
 cp "${SCRIPT_DIR}/config.json" "${APP_DIR}/Contents/MacOS/"
 cp "${SCRIPT_DIR}/evi.ico" "${APP_DIR}/Contents/MacOS/"
+cp "${SCRIPT_DIR}/prefill_template.txt" "${APP_DIR}/Contents/MacOS/"
+cp "${SCRIPT_DIR}/system_prompt.txt" "${APP_DIR}/Contents/MacOS/"
 
 # ORT dylib -> MacOS/ort-dylib/ (same layout as dev)
 mkdir -p "${APP_DIR}/Contents/MacOS/ort-dylib"
