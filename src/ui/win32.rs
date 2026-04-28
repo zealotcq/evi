@@ -8,6 +8,10 @@ const WM_TRAYICON: u32 = WM_USER + 1;
 const ID_TIMER_HIDE: usize = 2001;
 const ID_TRAY_SHOW: usize = 1001;
 const ID_TRAY_COZE_REFINE: usize = 1003;
+const ID_TRAY_ENERGY_GATE: usize = 1005;
+const ID_TRAY_CLIPBOARD_100MS: usize = 1006;
+const ID_TRAY_CLIPBOARD_500MS: usize = 1007;
+const ID_TRAY_CLIPBOARD_NONE: usize = 1008;
 const ID_TRAY_SET_KEY: usize = 1004;
 const ID_TRAY_EXIT: usize = 1002;
 
@@ -130,6 +134,19 @@ unsafe extern "system" fn subclass_wndproc(
                         crate::ui::set_llm_remote(enabled);
                     }
                 }
+                ID_TRAY_ENERGY_GATE => {
+                    let enabled = !crate::ui::get_energy_gate_enabled();
+                    crate::ui::set_energy_gate_enabled(enabled);
+                }
+                ID_TRAY_CLIPBOARD_100MS => {
+                    crate::ui::set_clipboard_restore_behavior("100ms");
+                }
+                ID_TRAY_CLIPBOARD_500MS => {
+                    crate::ui::set_clipboard_restore_behavior("500ms");
+                }
+                ID_TRAY_CLIPBOARD_NONE => {
+                    crate::ui::set_clipboard_restore_behavior("none");
+                }
                 ID_TRAY_SET_KEY => {
                     crate::ui::api_key_dialog::request_api_key_dialog();
                 }
@@ -174,13 +191,12 @@ unsafe fn show_tray_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     }
 
+    // 网络大模型润色
     let refine_text: Vec<u16> = "网络大模型润色\0".encode_utf16().collect();
     let refine_ptr = PCWSTR(refine_text.as_ptr());
     let refine_checked = crate::ui::get_llm_remote_enabled();
     let has_api_key = crate::secret::get_api_key().is_some();
-    let llm_remote_enabled = has_api_key;
-
-    if !llm_remote_enabled {
+    if !has_api_key {
         let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_TRAY_COZE_REFINE, refine_ptr);
     } else if refine_checked {
         let _ = AppendMenuW(
@@ -192,6 +208,43 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     } else {
         let _ = AppendMenuW(menu, MF_STRING, ID_TRAY_COZE_REFINE, refine_ptr);
     }
+
+    // 自适应能量门控
+    let gate_text: Vec<u16> = "自适应能量门控\0".encode_utf16().collect();
+    let gate_ptr = PCWSTR(gate_text.as_ptr());
+    let gate_checked = crate::ui::get_energy_gate_enabled();
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING | if gate_checked { MF_CHECKED } else { MF_STRING },
+        ID_TRAY_ENERGY_GATE,
+        gate_ptr,
+    );
+
+    // 剪贴板恢复行为子菜单
+    let clip_text: Vec<u16> = "剪贴板恢复行为\0".encode_utf16().collect();
+    let clip_sub = match CreatePopupMenu() {
+        Ok(m) => m,
+        Err(_) => {
+            let _ = DestroyMenu(menu);
+            return;
+        }
+    };
+    let t100: Vec<u16> = "100ms\0".encode_utf16().collect();
+    let t500: Vec<u16> = "500ms\0".encode_utf16().collect();
+    let tnone: Vec<u16> = "不恢复\0".encode_utf16().collect();
+    let behavior = crate::ui::get_clipboard_restore_behavior();
+    let f100 = if behavior == "100ms" { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let f500 = if behavior == "500ms" { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let fnone = if behavior == "none" { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let _ = AppendMenuW(clip_sub, f100, ID_TRAY_CLIPBOARD_100MS, PCWSTR(t100.as_ptr()));
+    let _ = AppendMenuW(clip_sub, f500, ID_TRAY_CLIPBOARD_500MS, PCWSTR(t500.as_ptr()));
+    let _ = AppendMenuW(clip_sub, fnone, ID_TRAY_CLIPBOARD_NONE, PCWSTR(tnone.as_ptr()));
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING | MF_POPUP,
+        clip_sub.0 as usize,
+        PCWSTR(clip_text.as_ptr()),
+    );
 
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 

@@ -222,9 +222,20 @@ impl TextOutput for ClipboardTextOutput {
         if result.is_ok() {
             *self.last_injected.lock() = text.to_string();
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        unsafe {
-            self.restore_clipboard(saved);
+        match crate::ui::get_clipboard_restore_behavior().as_str() {
+            "500ms" => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                unsafe {
+                    self.restore_clipboard(saved);
+                }
+            }
+            "none" => {}
+            _ => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                unsafe {
+                    self.restore_clipboard(saved);
+                }
+            }
         }
         result
     }

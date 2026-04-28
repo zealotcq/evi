@@ -869,6 +869,11 @@ fn main() -> Result<()> {
             vi::ui::set_energy_gate_enabled(true);
             info!("Restored energy_gate_enabled from config");
         }
+        *vi::ui::CLIPBOARD_RESTORE_BEHAVIOR.write() = cfg.clipboard_restore_behavior.clone();
+        info!(
+            "Restored clipboard_restore_behavior from config: {}",
+            cfg.clipboard_restore_behavior
+        );
     }
 
     if crate::models::find_model_base_dir().is_none() {

@@ -8,6 +8,9 @@ pub struct MacTray {
     energy_gate_item: MenuItem,
 }
 
+unsafe impl Send for MacTray {}
+unsafe impl Sync for MacTray {}
+
 impl MacTray {
     pub fn new(
         quit_item: MenuItem,
@@ -20,6 +23,7 @@ impl MacTray {
         let menu = Menu::new();
         menu.append_items(&[
             &coze_refine_item,
+            &PredefinedMenuItem::separator(),
             &energy_gate_item,
             &PredefinedMenuItem::separator(),
             &set_key_item,

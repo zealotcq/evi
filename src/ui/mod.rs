@@ -47,6 +47,20 @@ pub fn set_energy_gate_enabled(enabled: bool) {
     }
 }
 
+pub static CLIPBOARD_RESTORE_BEHAVIOR: std::sync::LazyLock<parking_lot::RwLock<String>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new("100ms".to_string()));
+
+pub fn get_clipboard_restore_behavior() -> String {
+    CLIPBOARD_RESTORE_BEHAVIOR.read().clone()
+}
+
+pub fn set_clipboard_restore_behavior(behavior: &str) {
+    *CLIPBOARD_RESTORE_BEHAVIOR.write() = behavior.to_string();
+    if let Err(e) = crate::Config::save_clipboard_restore_behavior(behavior) {
+        log::warn!("Failed to save clipboard_restore_behavior: {}", e);
+    }
+}
+
 pub struct Scheme {
     pub name: String,
     pub system_prompt: String,
