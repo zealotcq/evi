@@ -828,10 +828,14 @@ enum MacEvent {
 fn main() -> Result<()> {
     request_all_permissions()?;
 
+    #[cfg(target_arch = "x86_64")]
+    let dylib_rel = "ort-dylib/onnxruntime-osx-x86_64-1.24.2/lib/libonnxruntime.1.24.2.dylib";
+    #[cfg(target_arch = "aarch64")]
+    let dylib_rel = "ort-dylib/onnxruntime-osx-arm64-1.24.2/lib/libonnxruntime.1.24.2.dylib";
+
     {
         let exe_dir = Config::exe_dir()?;
-        let dylib_path =
-            exe_dir.join("ort-dylib/onnxruntime-osx-x86_64-1.24.2/lib/libonnxruntime.1.24.2.dylib");
+        let dylib_path = exe_dir.join(dylib_rel);
         if !dylib_path.exists() {
             anyhow::bail!("ORT dylib not found at {}", dylib_path.display());
         }
