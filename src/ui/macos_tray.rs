@@ -5,12 +5,14 @@ pub struct MacTray {
     #[allow(dead_code)]
     tray: TrayIcon,
     coze_refine_item: MenuItem,
+    energy_gate_item: MenuItem,
 }
 
 impl MacTray {
     pub fn new(
         quit_item: MenuItem,
         coze_refine_item: MenuItem,
+        energy_gate_item: MenuItem,
         set_key_item: MenuItem,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let icon = load_icon();
@@ -18,6 +20,7 @@ impl MacTray {
         let menu = Menu::new();
         menu.append_items(&[
             &coze_refine_item,
+            &energy_gate_item,
             &PredefinedMenuItem::separator(),
             &set_key_item,
             &PredefinedMenuItem::separator(),
@@ -33,6 +36,7 @@ impl MacTray {
         Ok(Self {
             tray,
             coze_refine_item,
+            energy_gate_item,
         })
     }
 
@@ -50,6 +54,14 @@ impl MacTray {
             let _ = self.coze_refine_item.set_text("网络大模型润色（需设置 API Key）");
             let _ = self.coze_refine_item.set_enabled(false);
         }
+    }
+
+    pub fn update_energy_gate(&self, enabled: bool) {
+        let _ = self.energy_gate_item.set_text(if enabled {
+            "✓ 自适应能量门控"
+        } else {
+            "自适应能量门控"
+        });
     }
 }
 

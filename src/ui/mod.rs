@@ -34,6 +34,19 @@ pub fn set_llm_remote(enabled: bool) {
     }
 }
 
+pub static ENERGY_GATE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn get_energy_gate_enabled() -> bool {
+    ENERGY_GATE_ENABLED.load(Ordering::SeqCst)
+}
+
+pub fn set_energy_gate_enabled(enabled: bool) {
+    ENERGY_GATE_ENABLED.store(enabled, Ordering::SeqCst);
+    if let Err(e) = crate::Config::save_energy_gate_enabled(enabled) {
+        log::warn!("Failed to save energy_gate_enabled: {}", e);
+    }
+}
+
 pub struct Scheme {
     pub name: String,
     pub system_prompt: String,

@@ -80,7 +80,7 @@ impl Session {
         let punc_dir = crate::models::punc_model_dir(&base);
 
         debug!("Loading VAD model from {}...", vad_dir.display());
-        let vad = VadEngine::new(&vad_dir)?;
+        let vad = VadEngine::new(&vad_dir, cfg.energy_gate_enabled, cfg.energy_gate_db_offset)?;
         debug!("Loading ASR model from {}...", asr_dir.display());
         let asr = AsrEngine::new(&asr_dir)?;
         debug!("Loading Punc model from {}...", punc_dir.display());
@@ -122,7 +122,7 @@ impl Session {
         let punc_dir = crate::models::punc_model_dir(&base);
 
         debug!("Loading VAD model from {}...", vad_dir.display());
-        let vad = VadEngine::new(&vad_dir)?;
+        let vad = VadEngine::new(&vad_dir, _cfg.energy_gate_enabled, _cfg.energy_gate_db_offset)?;
         debug!("Loading ASR model from {}...", asr_dir.display());
         let asr = AsrEngine::new(&asr_dir)?;
         debug!("Loading Punc model from {}...", punc_dir.display());
@@ -865,6 +865,10 @@ fn main() -> Result<()> {
             vi::ui::set_llm_remote(true);
             info!("Restored llm_remote_enabled from config");
         }
+        if cfg.energy_gate_enabled {
+            vi::ui::set_energy_gate_enabled(true);
+            info!("Restored energy_gate_enabled from config");
+        }
     }
 
     if crate::models::find_model_base_dir().is_none() {
@@ -897,17 +901,20 @@ fn main() -> Result<()> {
     let quit_id = quit_item.id().clone();
     let coze_refine_item = MenuItem::new("网络大模型润色", true, None);
     let coze_id = coze_refine_item.id().clone();
+    let energy_gate_item = MenuItem::new("自适应能量门控", true, None);
+    let energy_gate_id = energy_gate_item.id().clone();
     let set_key_item = MenuItem::new("设置 API Key", true, None);
     let set_key_id = set_key_item.id().clone();
 
     let tray: Arc<MacTray> = Arc::new(
-        MacTray::new(quit_item, coze_refine_item, set_key_item)
+        MacTray::new(quit_item, coze_refine_item, energy_gate_item, set_key_item)
             .map_err(|e| anyhow::anyhow!("Failed to create tray: {}", e))?,
     );
 
     {
         let has_key = vi::secret::get_api_key().is_some();
         tray.update_coze_refine(vi::ui::get_llm_remote_enabled(), has_key);
+        tray.update_energy_gate(vi::ui::get_energy_gate_enabled());
     }
 
     let menu_proxy = proxy.clone();
@@ -921,6 +928,10 @@ fn main() -> Result<()> {
             } else {
                 vi::ui::set_llm_remote(!current);
             }
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == energy_gate_id {
+            let current = vi::ui::get_energy_gate_enabled();
+            vi::ui::set_energy_gate_enabled(!current);
             let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         } else if event.id == set_key_id {
             vi::ui::api_key_dialog::request_api_key_dialog();
@@ -981,6 +992,9 @@ fn main() -> Result<()> {
                 let has_key = vi::secret::get_api_key().is_some();
                 let enabled = vi::ui::get_llm_remote_enabled();
                 tray.update_coze_refine(enabled, has_key);
+                let gate_enabled = vi::ui::get_energy_gate_enabled();
+                tray.update_energy_gate(gate_enabled);
+                session.vad.lock().set_energy_gate_enabled(gate_enabled);
             }
 
             Event::UserEvent(MacEvent::Quit) => {

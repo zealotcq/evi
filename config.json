@@ -1,6 +1,8 @@
 {
   "active_scheme": "默认",
   "debug": true,
+  "energy_gate_enabled": false,
+  "energy_gate_db_offset": 15.0,
   "llm_remote": {
     "model": "glm-4.5-flash",
     "timeout": 5,

@@ -1,7 +1,10 @@
-//! FSMN-VAD ONNX model wrapper.
+//! FSMN-VAD ONNX model wrapper with optional adaptive energy gate.
 //!
 //! Loads the FunASR VAD model (`iic/speech_fsmn_vad_zh-cn-16k-common-onnx`)
 //! and detects speech / non-speech segments in audio.
+//!
+//! When the adaptive energy gate is enabled, frames with RMS energy below
+//! `reference_energy - db_offset` are discarded even if VAD says speech.
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -17,14 +20,112 @@ pub struct SpeechSegment {
     pub end_ms: u64,
 }
 
+// ── Adaptive Energy Gate ───────────────────────────────────────────────────────
+
+struct EnergyGate {
+    enabled: bool,
+    db_offset: f64,
+    reference_energy: Option<f64>,
+    init_samples: Vec<f64>,
+    min_init_frames: usize,
+    frames_below_threshold: usize,
+}
+
+impl EnergyGate {
+    fn new(enabled: bool, db_offset: f64) -> Self {
+        Self {
+            enabled,
+            db_offset,
+            reference_energy: None,
+            init_samples: Vec::new(),
+            min_init_frames: 20,
+            frames_below_threshold: 0,
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.reference_energy = None;
+            self.init_samples.clear();
+            self.frames_below_threshold = 0;
+        }
+    }
+
+    fn begin_utterance(&mut self) {
+        self.init_samples.clear();
+        self.frames_below_threshold = 0;
+    }
+
+    fn process_frame(&mut self, energy: f64, speech_prob: f32) -> bool {
+        if !self.enabled {
+            return true;
+        }
+
+        if energy <= 0.0 {
+            return false;
+        }
+
+        if let Some(ref_e) = self.reference_energy {
+            let threshold = ref_e * 10f64.powf(-self.db_offset / 10.0);
+
+            if energy >= threshold {
+                if speech_prob >= 0.7 && energy < ref_e * 8.0 {
+                    let alpha = if energy > ref_e * 2.0 {
+                        0.03
+                    } else if energy > ref_e {
+                        0.05
+                    } else {
+                        0.12
+                    };
+                    self.reference_energy = Some(alpha * energy + (1.0 - alpha) * ref_e);
+                }
+                self.frames_below_threshold = 0;
+                return true;
+            } else {
+                self.frames_below_threshold += 1;
+                if self.frames_below_threshold >= 50 {
+                    self.reference_energy = Some(ref_e * 0.92);
+                    self.frames_below_threshold = 0;
+                    debug!(
+                        "EnergyGate: auto-relax reference to {:.6}",
+                        ref_e * 0.92
+                    );
+                }
+                return false;
+            }
+        }
+
+        if speech_prob >= 0.8 {
+            self.init_samples.push(energy);
+            if self.init_samples.len() >= self.min_init_frames {
+                let mut sorted = self.init_samples.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let mid = sorted.len() / 2;
+                self.reference_energy = Some(sorted[mid]);
+                debug!(
+                    "EnergyGate: initialized reference_energy={:.6} from {} samples",
+                    sorted[mid],
+                    self.init_samples.len()
+                );
+            }
+        }
+
+        true
+    }
+}
+
+// ── VAD Engine ─────────────────────────────────────────────────────────────────
+
 pub struct VadEngine {
     session: Session,
     cmvn: Option<Cmvn>,
     config: FbankConfig,
+    energy_gate: EnergyGate,
 }
 
 impl VadEngine {
-    pub fn new(model_dir: &Path) -> Result<Self> {
+    pub fn new(model_dir: &Path, energy_gate_enabled: bool, energy_gate_db_offset: f64) -> Result<Self> {
         let model_path = if model_dir.join("model_quant.onnx").exists() {
             model_dir.join("model_quant.onnx")
         } else {
@@ -66,11 +167,23 @@ impl VadEngine {
             None
         };
 
+        if energy_gate_enabled {
+            debug!(
+                "VadEngine: adaptive energy gate enabled (db_offset={:.1})",
+                energy_gate_db_offset
+            );
+        }
+
         Ok(Self {
             session,
             cmvn,
             config: FbankConfig::default(),
+            energy_gate: EnergyGate::new(energy_gate_enabled, energy_gate_db_offset),
         })
+    }
+
+    pub fn set_energy_gate_enabled(&mut self, enabled: bool) {
+        self.energy_gate.set_enabled(enabled);
     }
 
     pub fn detect(&mut self, pcm: &[f32]) -> Result<Vec<SpeechSegment>> {
@@ -136,6 +249,9 @@ impl VadEngine {
         let num_classes = 248usize;
         let num_time = logits_data.len() / num_classes;
 
+        let frame_energies = compute_vad_frame_energies(pcm, &self.config);
+        self.energy_gate.begin_utterance();
+
         let mut segments = Vec::new();
         let mut in_speech = false;
         let mut seg_start: u64 = 0;
@@ -144,10 +260,16 @@ impl VadEngine {
             let sil_prob = logits_data[i * num_classes];
             let speech_prob = 1.0 - sil_prob;
             let time_ms = (i as f64 * frame_shift_ms) as u64;
-            if speech_prob >= threshold && !in_speech {
+
+            let frame_energy = frame_energies.get(i).copied().unwrap_or(0.0);
+            let energy_ok = self.energy_gate.process_frame(frame_energy, speech_prob);
+
+            let effective_speech = speech_prob >= threshold && energy_ok;
+
+            if effective_speech && !in_speech {
                 in_speech = true;
                 seg_start = time_ms;
-            } else if speech_prob < threshold && in_speech {
+            } else if !effective_speech && in_speech {
                 in_speech = false;
                 segments.push(SpeechSegment {
                     start_ms: seg_start,
@@ -168,6 +290,29 @@ impl VadEngine {
         debug!("VAD: detected {} speech segments", segments.len());
         Ok(segments)
     }
+}
+
+fn compute_vad_frame_energies(pcm: &[f32], config: &FbankConfig) -> Vec<f64> {
+    let frame_shift = config.frame_shift_samples();
+    let frame_len = config.frame_length_samples();
+    let num_frames = if pcm.len() > frame_len {
+        (pcm.len() - frame_len) / frame_shift + 1
+    } else {
+        1
+    };
+
+    let mut energies = Vec::with_capacity(num_frames);
+    for i in 0..num_frames {
+        let start = i * frame_shift;
+        let end = (start + frame_len).min(pcm.len());
+        let rms: f64 = pcm[start..end]
+            .iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum::<f64>()
+            / (end - start) as f64;
+        energies.push(rms);
+    }
+    energies
 }
 
 fn merge_close_segments(segments: Vec<SpeechSegment>, min_gap_ms: u64) -> Vec<SpeechSegment> {
