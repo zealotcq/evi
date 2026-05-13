@@ -12,7 +12,6 @@ use parking_lot::Mutex;
 pub struct RefineManager {
     fallback: FallbackRefineEngine,
     punc: Mutex<PuncEngine>,
-    punc_enabled: bool,
     llm: Option<LlmEngine>,
     llm_remote: Option<crate::LlmRemoteConfig>,
     min_refine_length: usize,
@@ -33,7 +32,6 @@ impl RefineManager {
         Ok(Self {
             fallback,
             punc: Mutex::new(punc),
-            punc_enabled: cfg.punc_enabled,
             llm,
             llm_remote: cfg.llm_remote.clone(),
             min_refine_length: cfg.min_refine_length,
@@ -42,9 +40,11 @@ impl RefineManager {
         })
     }
 
-    pub fn set_punc_enabled(&mut self, enabled: bool) {
-        self.punc_enabled = enabled;
-        info!("RefineManager: punc_enabled set to {}", enabled);
+    pub fn set_punc_enabled(&mut self, _enabled: bool) {
+        info!(
+            "RefineManager: punc_enabled set to {} (note: reads from global atomic)",
+            _enabled
+        );
     }
 
     pub fn rebuild_llm_prompt(
@@ -90,7 +90,7 @@ impl RefineManager {
             return self.fallback_refine_with_punc(text, dr);
         }
 
-        if ui::get_llm_remote_enabled() {
+        if ui::get_refine_scheme() == "llm_remote" {
             if let Some(ref cfg) = self.llm_remote {
                 let refined = crate::engine::llm_remote::llm_remote_refine_with_fallback(
                     text,
@@ -130,7 +130,7 @@ impl RefineManager {
 
     fn fallback_refine_with_punc(&self, text: &str, dr: &DebugRefine) -> String {
         let filtered = self.fallback.refine(text, dr);
-        if !self.punc_enabled {
+        if !ui::get_punc_enabled() {
             return filtered;
         }
         match self.punc.lock().add_punct(&filtered) {

@@ -84,13 +84,10 @@ impl EnergyGate {
                 return true;
             } else {
                 self.frames_below_threshold += 1;
-                if self.frames_below_threshold >= 50 {
-                    self.reference_energy = Some(ref_e * 0.92);
+                if self.frames_below_threshold >= 200 {
+                    self.reference_energy = Some(ref_e * 0.96);
                     self.frames_below_threshold = 0;
-                    debug!(
-                        "EnergyGate: auto-relax reference to {:.6}",
-                        ref_e * 0.92
-                    );
+                    debug!("EnergyGate: auto-relax reference to {:.6}", ref_e * 0.96);
                 }
                 return false;
             }
@@ -125,7 +122,11 @@ pub struct VadEngine {
 }
 
 impl VadEngine {
-    pub fn new(model_dir: &Path, energy_gate_enabled: bool, energy_gate_db_offset: f64) -> Result<Self> {
+    pub fn new(
+        model_dir: &Path,
+        energy_gate_enabled: bool,
+        energy_gate_db_offset: f64,
+    ) -> Result<Self> {
         let model_path = if model_dir.join("model_quant.onnx").exists() {
             model_dir.join("model_quant.onnx")
         } else {

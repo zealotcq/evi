@@ -1,9 +1,10 @@
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 pub struct MacTray {
     #[allow(dead_code)]
     tray: TrayIcon,
+    refine_default_item: MenuItem,
     coze_refine_item: MenuItem,
     energy_gate_item: MenuItem,
     punc_item: MenuItem,
@@ -12,6 +13,7 @@ pub struct MacTray {
 impl MacTray {
     pub fn new(
         quit_item: MenuItem,
+        refine_default_item: MenuItem,
         coze_refine_item: MenuItem,
         energy_gate_item: MenuItem,
         punc_item: MenuItem,
@@ -19,9 +21,12 @@ impl MacTray {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let icon = load_icon();
 
+        let refine_submenu =
+            Submenu::with_items("润色方案", true, &[&refine_default_item, &coze_refine_item])?;
+
         let menu = Menu::new();
         menu.append_items(&[
-            &coze_refine_item,
+            &refine_submenu,
             &PredefinedMenuItem::separator(),
             &energy_gate_item,
             &PredefinedMenuItem::separator(),
@@ -40,6 +45,7 @@ impl MacTray {
 
         Ok(Self {
             tray,
+            refine_default_item,
             coze_refine_item,
             energy_gate_item,
             punc_item,
@@ -48,16 +54,24 @@ impl MacTray {
 
     pub fn set_state(&self, _state: TrayDisplayState) {}
 
-    pub fn update_coze_refine(&self, enabled: bool, has_api_key: bool) {
+    pub fn update_refine_route(&self, scheme: &str, has_api_key: bool) {
+        let _ = self.refine_default_item.set_text(if scheme == "default" {
+            "✓ 默认润色"
+        } else {
+            "默认润色"
+        });
+
         if has_api_key {
             let _ = self.coze_refine_item.set_enabled(true);
-            let _ = self.coze_refine_item.set_text(if enabled {
+            let _ = self.coze_refine_item.set_text(if scheme == "llm_remote" {
                 "✓ 网络大模型润色"
             } else {
                 "网络大模型润色"
             });
         } else {
-            let _ = self.coze_refine_item.set_text("网络大模型润色（需设置 API Key）");
+            let _ = self
+                .coze_refine_item
+                .set_text("网络大模型润色（需设置 API Key）");
             let _ = self.coze_refine_item.set_enabled(false);
         }
     }

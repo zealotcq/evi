@@ -6,12 +6,12 @@ pub mod win32;
 #[cfg(target_os = "macos")]
 pub mod macos_tray;
 
+use egui::ViewportCommand;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use egui::ViewportCommand;
 
 #[cfg(target_os = "windows")]
 pub static HOOK_CHANNEL: parking_lot::Mutex<Option<crossbeam_channel::Sender<bool>>> =
@@ -21,16 +21,17 @@ pub static HOOK_CHANNEL: parking_lot::Mutex<Option<crossbeam_channel::Sender<boo
 pub static HOOK_CHANNEL: std::sync::Mutex<Option<crossbeam_channel::Sender<bool>>> =
     std::sync::Mutex::new(None);
 
-pub static USE_LLM_REMOTE: AtomicBool = AtomicBool::new(false);
+pub static REFINE_SCHEME: std::sync::LazyLock<parking_lot::RwLock<String>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new("default".to_string()));
 
-pub fn get_llm_remote_enabled() -> bool {
-    USE_LLM_REMOTE.load(Ordering::SeqCst)
+pub fn get_refine_scheme() -> String {
+    REFINE_SCHEME.read().clone()
 }
 
-pub fn set_llm_remote(enabled: bool) {
-    USE_LLM_REMOTE.store(enabled, Ordering::SeqCst);
-    if let Err(e) = crate::Config::save_llm_remote_enabled(enabled) {
-        log::warn!("Failed to save llm_remote_enabled: {}", e);
+pub fn set_refine_scheme(scheme: &str) {
+    *REFINE_SCHEME.write() = scheme.to_string();
+    if let Err(e) = crate::Config::save_refine_scheme(scheme) {
+        log::warn!("Failed to save refine_scheme: {}", e);
     }
 }
 
@@ -44,20 +45,6 @@ pub fn set_energy_gate_enabled(enabled: bool) {
     ENERGY_GATE_ENABLED.store(enabled, Ordering::SeqCst);
     if let Err(e) = crate::Config::save_energy_gate_enabled(enabled) {
         log::warn!("Failed to save energy_gate_enabled: {}", e);
-    }
-}
-
-pub static CLIPBOARD_RESTORE_BEHAVIOR: std::sync::LazyLock<parking_lot::RwLock<String>> =
-    std::sync::LazyLock::new(|| parking_lot::RwLock::new("100ms".to_string()));
-
-pub fn get_clipboard_restore_behavior() -> String {
-    CLIPBOARD_RESTORE_BEHAVIOR.read().clone()
-}
-
-pub fn set_clipboard_restore_behavior(behavior: &str) {
-    *CLIPBOARD_RESTORE_BEHAVIOR.write() = behavior.to_string();
-    if let Err(e) = crate::Config::save_clipboard_restore_behavior(behavior) {
-        log::warn!("Failed to save clipboard_restore_behavior: {}", e);
     }
 }
 
@@ -395,8 +382,7 @@ impl eframe::App for ViApp {
 
         if self.debug {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        }
-        else {
+        } else {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false)); // 隐藏窗口
             ctx.send_viewport_cmd(ViewportCommand::Minimized(true)); // 最小化窗口
         }

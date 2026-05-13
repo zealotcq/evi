@@ -202,6 +202,9 @@ impl Session {
         if self.recording.load(Ordering::SeqCst) {
             return;
         }
+        self.vad
+            .lock()
+            .set_energy_gate_enabled(vi::ui::get_energy_gate_enabled());
         debug!("Recording started (Right Ctrl held)");
         log_event("RECORDING_START", "");
         self.results.lock().clear();
@@ -479,19 +482,19 @@ fn main() -> Result<()> {
     vi::secret::load_key();
 
     if let Ok(cfg) = Config::load() {
-        if cfg.llm_remote_enabled {
-            vi::ui::set_llm_remote(true);
-            info!("Restored llm_remote_enabled from config");
-        }
+        let scheme = if cfg.refine_scheme != "default" {
+            cfg.refine_scheme.clone()
+        } else if cfg.llm_remote_enabled {
+            "llm_remote".to_string()
+        } else {
+            cfg.refine_scheme.clone()
+        };
+        vi::ui::set_refine_scheme(&scheme);
+        info!("Restored refine_scheme from config: {}", scheme);
         if cfg.energy_gate_enabled {
             vi::ui::set_energy_gate_enabled(true);
             info!("Restored energy_gate_enabled from config");
         }
-        *vi::ui::CLIPBOARD_RESTORE_BEHAVIOR.write() = cfg.clipboard_restore_behavior.clone();
-        info!(
-            "Restored clipboard_restore_behavior from config: {}",
-            cfg.clipboard_restore_behavior
-        );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
     }
@@ -876,19 +879,19 @@ fn main() -> Result<()> {
     vi::secret::load_key();
 
     if let Ok(cfg) = Config::load() {
-        if cfg.llm_remote_enabled {
-            vi::ui::set_llm_remote(true);
-            info!("Restored llm_remote_enabled from config");
-        }
+        let scheme = if cfg.refine_scheme != "default" {
+            cfg.refine_scheme.clone()
+        } else if cfg.llm_remote_enabled {
+            "llm_remote".to_string()
+        } else {
+            cfg.refine_scheme.clone()
+        };
+        vi::ui::set_refine_scheme(&scheme);
+        info!("Restored refine_scheme from config: {}", scheme);
         if cfg.energy_gate_enabled {
             vi::ui::set_energy_gate_enabled(true);
             info!("Restored energy_gate_enabled from config");
         }
-        *vi::ui::CLIPBOARD_RESTORE_BEHAVIOR.write() = cfg.clipboard_restore_behavior.clone();
-        info!(
-            "Restored clipboard_restore_behavior from config: {}",
-            cfg.clipboard_restore_behavior
-        );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
     }
@@ -920,6 +923,8 @@ fn main() -> Result<()> {
 
     let quit_item = MenuItem::new("退出", true, None);
     let quit_id = quit_item.id().clone();
+    let refine_default_item = MenuItem::new("默认润色", true, None);
+    let refine_default_id = refine_default_item.id().clone();
     let coze_refine_item = MenuItem::new("网络大模型润色", true, None);
     let coze_id = coze_refine_item.id().clone();
     let energy_gate_item = MenuItem::new("自适应能量门控", true, None);
@@ -930,13 +935,20 @@ fn main() -> Result<()> {
     let set_key_id = set_key_item.id().clone();
 
     let tray: Arc<MacTray> = Arc::new(
-        MacTray::new(quit_item, coze_refine_item, energy_gate_item, punc_item, set_key_item)
-            .map_err(|e| anyhow::anyhow!("Failed to create tray: {}", e))?,
+        MacTray::new(
+            quit_item,
+            refine_default_item,
+            coze_refine_item,
+            energy_gate_item,
+            punc_item,
+            set_key_item,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create tray: {}", e))?,
     );
 
     {
         let has_key = vi::secret::get_api_key().is_some();
-        tray.update_coze_refine(vi::ui::get_llm_remote_enabled(), has_key);
+        tray.update_refine_route(&vi::ui::get_refine_scheme(), has_key);
         tray.update_energy_gate(vi::ui::get_energy_gate_enabled());
         tray.update_punc(vi::ui::get_punc_enabled());
     }
@@ -945,12 +957,14 @@ fn main() -> Result<()> {
     MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
         if event.id == quit_id {
             let _ = menu_proxy.send_event(MacEvent::Quit);
+        } else if event.id == refine_default_id {
+            vi::ui::set_refine_scheme("default");
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         } else if event.id == coze_id {
-            let current = vi::ui::get_llm_remote_enabled();
-            if !current && vi::secret::get_api_key().is_none() {
+            if vi::secret::get_api_key().is_none() {
                 vi::ui::api_key_dialog::request_api_key_dialog();
             } else {
-                vi::ui::set_llm_remote(!current);
+                vi::ui::set_refine_scheme("llm_remote");
             }
             let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         } else if event.id == energy_gate_id {
@@ -1018,14 +1032,12 @@ fn main() -> Result<()> {
                     processing = false;
                 }
                 let has_key = vi::secret::get_api_key().is_some();
-                let enabled = vi::ui::get_llm_remote_enabled();
-                tray.update_coze_refine(enabled, has_key);
+                let scheme = vi::ui::get_refine_scheme();
+                tray.update_refine_route(&scheme, has_key);
                 let gate_enabled = vi::ui::get_energy_gate_enabled();
                 tray.update_energy_gate(gate_enabled);
-                session.vad.lock().set_energy_gate_enabled(gate_enabled);
                 let punc_enabled = vi::ui::get_punc_enabled();
                 tray.update_punc(punc_enabled);
-                session.refine_mgr.lock().set_punc_enabled(punc_enabled);
             }
 
             Event::UserEvent(MacEvent::Quit) => {

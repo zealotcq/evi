@@ -149,7 +149,10 @@ fn download_file(
         0
     };
 
-    let url = format!("{}/{}/resolve/master/{}", DOWNLOAD_BASE, model_id, file.path);
+    let url = format!(
+        "{}/{}/resolve/master/{}",
+        DOWNLOAD_BASE, model_id, file.path
+    );
     if existing_size > 0 {
         logs.lock().push(format!(
             "  ↓ {} ({}, resuming from {})",
@@ -371,10 +374,9 @@ fn load_fonts(ctx: &egui::Context) {
     for path in paths {
         if let Ok(data) = std::fs::read(path) {
             let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "chinese".into(),
-                Arc::new(egui::FontData::from_owned(data)),
-            );
+            fonts
+                .font_data
+                .insert("chinese".into(), Arc::new(egui::FontData::from_owned(data)));
             fonts
                 .families
                 .entry(egui::FontFamily::Proportional)
@@ -396,7 +398,8 @@ pub fn run_download_window() -> Result<()> {
     let done = Arc::new(AtomicBool::new(false));
     let result: Arc<Mutex<Option<Result<()>>>> = Arc::new(Mutex::new(None));
 
-    logs.lock().push("EVI 输入法 - 自动下载语音识别模型".to_string());
+    logs.lock()
+        .push("EVI 输入法 - 自动下载语音识别模型".to_string());
     logs.lock().push(String::new());
 
     {
