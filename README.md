@@ -2,7 +2,7 @@
 rust 开发的跨平台语音输入法
 能学习用户的语音习惯，优化输入表现
 
-V2.9.0下载
+V2.9.1下载
 通过网盘分享的文件：evi release
 链接: https://pan.baidu.com/s/1BAR7b9Kc-1KtXa1tRh13rA?pwd=1234 提取码: 1234
 
@@ -39,6 +39,10 @@ V2.9.0下载
 - mac版
   - 双击打开安装包，拖到Applications
   - 后续在finder中启用（需要设置权限）
+  - 因为app没有签名，需要解除隔离才能正常启动，解除命令如下:
+    ```bash
+    sudo xattr -rd com.apple.quarantine /Applications/EVI.app 
+    ```
   - 启动后在右上角会有绿色小e图标
   - 按下右command键说话，释放右command键进行语音识别
   - 语音识别结果会自动填入当前聚焦的文本框
