@@ -1,10 +1,14 @@
-//! FSMN-VAD ONNX model wrapper with optional adaptive energy gate.
+//! FSMN-VAD ONNX model wrapper with optional fixed energy gate.
 //!
 //! Loads the FunASR VAD model (`iic/speech_fsmn_vad_zh-cn-16k-common-onnx`)
 //! and detects speech / non-speech segments in audio.
 //!
-//! When the adaptive energy gate is enabled, frames with RMS energy below
-//! `reference_energy - db_offset` are discarded even if VAD says speech.
+//! When the energy gate is enabled and a calibrated reference exists, frames
+//! whose energy falls outside a ±`db_offset` dB window around the calibrated
+//! reference are discarded even if VAD says speech. Without a calibration, or
+//! when the gate is disabled, all frames pass. The reference energy comes from
+//! a one-shot user calibration (hold Right Shift and speak) and is persisted
+//! in the config file.
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -20,15 +24,12 @@ pub struct SpeechSegment {
     pub end_ms: u64,
 }
 
-// ── Adaptive Energy Gate ───────────────────────────────────────────────────────
+// ── Fixed Energy Gate ───────────────────────────────────────────────────────
 
 struct EnergyGate {
     enabled: bool,
     db_offset: f64,
     reference_energy: Option<f64>,
-    init_samples: Vec<f64>,
-    min_init_frames: usize,
-    frames_below_threshold: usize,
 }
 
 impl EnergyGate {
@@ -37,78 +38,30 @@ impl EnergyGate {
             enabled,
             db_offset,
             reference_energy: initial_reference,
-            init_samples: Vec::new(),
-            min_init_frames: 20,
-            frames_below_threshold: 0,
         }
     }
 
     fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        if !enabled {
-            self.reference_energy = None;
-            self.init_samples.clear();
-            self.frames_below_threshold = 0;
-        }
     }
 
-    fn begin_utterance(&mut self) {
-        self.init_samples.clear();
-        self.frames_below_threshold = 0;
+    fn set_reference(&mut self, reference: Option<f64>) {
+        self.reference_energy = reference;
     }
 
-    fn process_frame(&mut self, energy: f64, speech_prob: f32) -> bool {
+    fn allows_energy(&self, energy: f64) -> bool {
         if !self.enabled {
             return true;
         }
-
+        let Some(ref_e) = self.reference_energy else {
+            return true;
+        };
         if energy <= 0.0 {
             return false;
         }
-
-        if let Some(ref_e) = self.reference_energy {
-            let threshold = ref_e * 10f64.powf(-self.db_offset / 10.0);
-
-            if energy >= threshold {
-                if speech_prob >= 0.7 && energy < ref_e * 8.0 {
-                    let alpha = if energy > ref_e * 2.0 {
-                        0.03
-                    } else if energy > ref_e {
-                        0.05
-                    } else {
-                        0.12
-                    };
-                    self.reference_energy = Some(alpha * energy + (1.0 - alpha) * ref_e);
-                }
-                self.frames_below_threshold = 0;
-                return true;
-            } else {
-                self.frames_below_threshold += 1;
-                if self.frames_below_threshold >= 200 {
-                    self.reference_energy = Some(ref_e * 0.96);
-                    self.frames_below_threshold = 0;
-                    debug!("EnergyGate: auto-relax reference to {:.6}", ref_e * 0.96);
-                }
-                return false;
-            }
-        }
-
-        if speech_prob >= 0.8 {
-            self.init_samples.push(energy);
-            if self.init_samples.len() >= self.min_init_frames {
-                let mut sorted = self.init_samples.clone();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                let mid = sorted.len() / 2;
-                self.reference_energy = Some(sorted[mid]);
-                debug!(
-                    "EnergyGate: initialized reference_energy={:.6} from {} samples",
-                    sorted[mid],
-                    self.init_samples.len()
-                );
-            }
-        }
-
-        true
+        let lower = ref_e * 10f64.powf(-self.db_offset / 10.0);
+        let upper = ref_e * 10f64.powf(self.db_offset / 10.0);
+        energy >= lower && energy <= upper
     }
 }
 
@@ -192,8 +145,76 @@ impl VadEngine {
         self.energy_gate.set_enabled(enabled);
     }
 
+    pub fn set_energy_gate_db_offset(&mut self, db: f64) {
+        self.energy_gate.db_offset = db;
+    }
+
     pub fn get_reference_energy(&self) -> Option<f64> {
         self.energy_gate.reference_energy
+    }
+
+    pub fn set_energy_gate_reference(&mut self, val: Option<f64>) {
+        self.energy_gate.set_reference(val);
+    }
+
+    pub fn calibrate_reference(&mut self, pcm: &[f32]) -> Result<f64> {
+        if pcm.is_empty() {
+            anyhow::bail!("no audio captured");
+        }
+
+        let gate_was_enabled = self.energy_gate.enabled;
+        self.energy_gate.set_enabled(false);
+        let detected = self.detect(pcm);
+        self.energy_gate.set_enabled(gate_was_enabled);
+        let segments = detected?;
+
+        if segments.is_empty() {
+            anyhow::bail!("no speech detected");
+        }
+
+        let ranges: Vec<(u64, u64)> = segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+        let median = self
+            .speech_frame_median(pcm, &ranges)
+            .ok_or_else(|| anyhow::anyhow!("no speech frames for calibration"))?;
+        debug!("Calibration: median frame energy {:.6}", median);
+        Ok(median)
+    }
+
+    pub fn gate_allows(&self, pcm: &[f32], speech_ranges_ms: &[(u64, u64)]) -> bool {
+        let Some(median) = self.speech_frame_median(pcm, speech_ranges_ms) else {
+            return true;
+        };
+        let allowed = self.energy_gate.allows_energy(median);
+        debug!(
+            "VolumeGate: recording median frame energy {:.6}, allowed={}",
+            median, allowed
+        );
+        allowed
+    }
+
+    fn speech_frame_median(&self, pcm: &[f32], speech_ranges_ms: &[(u64, u64)]) -> Option<f64> {
+        let frame_energies = compute_vad_frame_energies(pcm, &self.config);
+        let shift_ms = self.config.frame_shift_ms as u64;
+        let mut vals: Vec<f64> = Vec::new();
+        for &(start_ms, end_ms) in speech_ranges_ms {
+            let first = (start_ms / shift_ms) as usize;
+            let last = (((end_ms + shift_ms - 1) / shift_ms) as usize).min(frame_energies.len());
+            for i in first..last {
+                if let Some(&e) = frame_energies.get(i) {
+                    vals.push(e);
+                }
+            }
+        }
+        if vals.is_empty() {
+            return None;
+        }
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = vals.len() / 2;
+        Some(if vals.len() % 2 == 1 {
+            vals[mid]
+        } else {
+            (vals[mid - 1] + vals[mid]) / 2.0
+        })
     }
 
     pub fn detect(&mut self, pcm: &[f32]) -> Result<Vec<SpeechSegment>> {
@@ -259,9 +280,6 @@ impl VadEngine {
         let num_classes = 248usize;
         let num_time = logits_data.len() / num_classes;
 
-        let frame_energies = compute_vad_frame_energies(pcm, &self.config);
-        self.energy_gate.begin_utterance();
-
         let mut segments = Vec::new();
         let mut in_speech = false;
         let mut seg_start: u64 = 0;
@@ -271,15 +289,10 @@ impl VadEngine {
             let speech_prob = 1.0 - sil_prob;
             let time_ms = (i as f64 * frame_shift_ms) as u64;
 
-            let frame_energy = frame_energies.get(i).copied().unwrap_or(0.0);
-            let energy_ok = self.energy_gate.process_frame(frame_energy, speech_prob);
-
-            let effective_speech = speech_prob >= threshold && energy_ok;
-
-            if effective_speech && !in_speech {
+            if speech_prob >= threshold && !in_speech {
                 in_speech = true;
                 seg_start = time_ms;
-            } else if !effective_speech && in_speech {
+            } else if speech_prob < threshold && in_speech {
                 in_speech = false;
                 segments.push(SpeechSegment {
                     start_ms: seg_start,

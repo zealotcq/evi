@@ -7,6 +7,7 @@ pub struct MacTray {
     refine_default_item: MenuItem,
     coze_refine_item: MenuItem,
     energy_gate_item: MenuItem,
+    gate_db_items: [MenuItem; 4],
     punc_item: MenuItem,
 }
 
@@ -16,6 +17,7 @@ impl MacTray {
         refine_default_item: MenuItem,
         coze_refine_item: MenuItem,
         energy_gate_item: MenuItem,
+        gate_db_items: [MenuItem; 4],
         punc_item: MenuItem,
         edit_db_item: MenuItem,
         set_key_item: MenuItem,
@@ -33,8 +35,20 @@ impl MacTray {
             menu.append(&PredefinedMenuItem::separator())?;
         }
 
+        let gate_db_submenu = Submenu::with_items(
+            "音量范围",
+            true,
+            &[
+                &gate_db_items[0],
+                &gate_db_items[1],
+                &gate_db_items[2],
+                &gate_db_items[3],
+            ],
+        )?;
+
         menu.append_items(&[
             &energy_gate_item,
+            &gate_db_submenu,
             &PredefinedMenuItem::separator(),
             &punc_item,
             &PredefinedMenuItem::separator(),
@@ -62,6 +76,7 @@ impl MacTray {
             refine_default_item,
             coze_refine_item,
             energy_gate_item,
+            gate_db_items,
             punc_item,
         })
     }
@@ -92,10 +107,23 @@ impl MacTray {
 
     pub fn update_energy_gate(&self, enabled: bool) {
         let _ = self.energy_gate_item.set_text(if enabled {
-            "✓ 自适应能量门控"
+            "✓ 音量门控"
         } else {
-            "自适应能量门控"
+            "音量门控"
         });
+    }
+
+    pub fn update_energy_gate_range(&self, db: f64) {
+        const LABELS: [&str; 4] = ["3dB", "6dB", "12dB", "18dB"];
+        const VALUES: [f64; 4] = [3.0, 6.0, 12.0, 18.0];
+        for (i, item) in self.gate_db_items.iter().enumerate() {
+            let active = VALUES[i] == db;
+            let _ = item.set_text(if active {
+                format!("✓ {}", LABELS[i])
+            } else {
+                LABELS[i].to_string()
+            });
+        }
     }
 
     pub fn update_punc(&self, enabled: bool) {

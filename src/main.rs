@@ -14,8 +14,6 @@ use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(not(target_os = "macos"))]
@@ -66,8 +64,8 @@ struct Session {
     refine_mgr: Mutex<RefineManager>,
     correction: FileCorrectionStore,
     recording: AtomicBool,
+    calibrating: AtomicBool,
     results: Mutex<Vec<SegmentResult>>,
-    audio_seq: AtomicU64,
 }
 
 impl Session {
@@ -107,8 +105,8 @@ impl Session {
             refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
+            calibrating: AtomicBool::new(false),
             results: Mutex::new(Vec::new()),
-            audio_seq: AtomicU64::new(1),
         })
     }
 
@@ -187,20 +185,32 @@ impl Session {
             refine_mgr: Mutex::new(refine_mgr),
             correction,
             recording: AtomicBool::new(false),
+            calibrating: AtomicBool::new(false),
             results: Mutex::new(Vec::new()),
-            audio_seq: AtomicU64::new(1),
         })
     }
 
-    fn start_recording(&self) {
+    fn start_recording(&self, calibrate: bool) {
         if self.recording.load(Ordering::SeqCst) {
             return;
         }
-        self.vad
-            .lock()
-            .set_energy_gate_enabled(vi::ui::get_energy_gate_enabled());
-        debug!("Recording started (Right Ctrl held)");
-        log_event("RECORDING_START", "");
+        {
+            let mut vad = self.vad.lock();
+            vad.set_energy_gate_enabled(vi::ui::get_energy_gate_enabled());
+            vad.set_energy_gate_db_offset(vi::ui::get_energy_gate_db());
+        }
+        self.calibrating.store(calibrate, Ordering::SeqCst);
+        if calibrate {
+            debug!("Calibration recording started (Right Shift held)");
+            log_event("CALIBRATION_START", "");
+        } else {
+            debug!("Recording started (Right Ctrl held)");
+            log_event("RECORDING_START", "");
+            if vi::ui::get_energy_gate_enabled() && self.vad.lock().get_reference_energy().is_none()
+            {
+                info!("Volume gate enabled but not calibrated yet; hold Right Shift and speak to calibrate.");
+            }
+        }
         self.results.lock().clear();
         if let Some(mut audio) = self.audio_source.try_lock() {
             if let Err(e) = audio.start() {
@@ -219,7 +229,12 @@ impl Session {
             return;
         }
         self.recording.store(false, Ordering::SeqCst);
-        debug!("Recording stopped (Right Ctrl released)");
+        let calibrating = self.calibrating.swap(false, Ordering::SeqCst);
+        if calibrating {
+            debug!("Calibration recording stopped (Right Shift released)");
+        } else {
+            debug!("Recording stopped (Right Ctrl released)");
+        }
         log_event("RECORDING_STOP", "");
 
         let i16_samples = {
@@ -234,7 +249,12 @@ impl Session {
         };
 
         if i16_samples.is_empty() {
-            warn!("No audio captured");
+            if calibrating {
+                warn!("Calibration failed: no audio captured");
+                log_event("CALIBRATION_FAILED", "no audio");
+            } else {
+                warn!("No audio captured");
+            }
             return;
         }
 
@@ -242,14 +262,27 @@ impl Session {
         let total_s = pcm.len() as f64 / DEFAULT_SAMPLE_RATE as f64;
         debug!("Captured {:.1}s of audio", total_s);
 
-        let seq = self.audio_seq.fetch_add(1, Ordering::Relaxed);
-        if vi::ui::get_save_log_enabled() {
-            if let Err(e) = save_wav(&i16_samples, DEFAULT_SAMPLE_RATE, seq) {
-                warn!("Failed to save audio: {e}");
+        if calibrating {
+            let cal_result = self.vad.lock().calibrate_reference(&pcm);
+            match cal_result {
+                Ok(reference) => {
+                    self.vad.lock().set_energy_gate_reference(Some(reference));
+                    if let Err(e) = Config::save_energy_gate_reference(Some(reference)) {
+                        warn!("Failed to save energy_gate_reference: {e}");
+                    }
+                    if !vi::ui::get_energy_gate_enabled() {
+                        vi::ui::set_energy_gate_enabled(true);
+                        info!("Volume gate auto-enabled after calibration");
+                    }
+                    info!("Volume gate calibrated: reference energy {:.6}", reference);
+                    log_event("CALIBRATION_DONE", &format!("{:.6}", reference));
+                }
+                Err(e) => {
+                    warn!("Volume calibration failed: {e}");
+                    log_event("CALIBRATION_FAILED", &e.to_string());
+                }
             }
         }
-
-        let asr_result_path = PathBuf::from(format!("log/{}.json", seq));
 
         let segments = match segment_audio(&pcm, DEFAULT_SAMPLE_RATE, &mut self.vad.lock()) {
             Ok(s) => s,
@@ -261,6 +294,15 @@ impl Session {
 
         if segments.is_empty() {
             warn!("No speech detected");
+            return;
+        }
+
+        let gate_ranges: Vec<(u64, u64)> =
+            segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
+        let gate_allowed = self.vad.lock().gate_allows(&pcm, &gate_ranges);
+        if !gate_allowed {
+            info!("Volume gate: recording volume outside calibrated range, discarded");
+            log_event("GATE_REJECTED", "");
             return;
         }
 
@@ -299,57 +341,10 @@ impl Session {
         log_event("ASR_COMPLETE", &full_text);
 
         let dr = self.dr.lock();
-        let (final_text, llm_tokens) = self.refine_mgr.lock().refine(&full_text, &dr);
+        let (final_text, _) = self.refine_mgr.lock().refine(&full_text, &dr);
 
         debug!("Refined: {}", final_text);
         log_event("REFINE_COMPLETE", &final_text);
-        if vi::ui::get_save_log_enabled() {
-            use serde_json::json;
-            let segments_json: Vec<_> = self
-                .results
-                .lock()
-                .iter()
-                .map(|r| {
-                    json!({
-                        "index": r.segment_index,
-                        "text": r.text,
-                        "start_ms": r.audio_start_ms,
-                        "end_ms": r.audio_end_ms,
-                        "chars": r.chars.iter().map(|c| json!({
-                            "text": c.text,
-                            "start_ms": c.start_ms,
-                            "end_ms": c.end_ms,
-                        })).collect::<Vec<_>>(),
-                        "tokens": r.tokens.iter().map(|t| json!({
-                            "token": t.token,
-                            "confidence": t.confidence,
-                        })).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-            let llm_tokens_json: Vec<_> = llm_tokens
-                .iter()
-                .map(|t| {
-                    json!({
-                        "token": t.token,
-                        "confidence": t.confidence,
-                    })
-                })
-                .collect();
-            let result_json = json!({
-                "text": final_text,
-                "segments": segments_json,
-                "llm_tokens": llm_tokens_json,
-            });
-            {
-                if let Err(e) = std::fs::write(
-                    &asr_result_path,
-                    serde_json::to_string_pretty(&result_json).unwrap(),
-                ) {
-                    warn!("Failed to save ASR result: {e}");
-                }
-            }
-        }
 
         if let Err(e) = self.text_session.lock().commit_text(&final_text) {
             error!("Failed to inject text: {e}");
@@ -514,10 +509,13 @@ fn main() -> Result<()> {
             "Restored energy_gate_enabled from config: {}",
             cfg.energy_gate_enabled
         );
+        vi::ui::set_energy_gate_db(cfg.energy_gate_db_offset);
+        info!(
+            "Restored energy_gate_db_offset from config: {}",
+            cfg.energy_gate_db_offset
+        );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
-        vi::ui::set_save_log_enabled(cfg.save_log);
-        info!("Restored save_log from config: {}", cfg.save_log);
     }
 
     {
@@ -554,7 +552,10 @@ fn main() -> Result<()> {
         };
 
         const VK_RCONTROL: i32 = 0xA3;
+        const VK_RSHIFT: i32 = 0xA1;
         let mut ctrl_held = false;
+        let mut shift_held = false;
+        let mut active_mode: Option<bool> = None;
 
         let mut msg = MSG::default();
         while running_hook.load(Ordering::SeqCst) {
@@ -568,14 +569,36 @@ fn main() -> Result<()> {
                 }
             }
 
-            let key_down = unsafe { GetAsyncKeyState(VK_RCONTROL) } as u16 & 0x8000 != 0;
-            if key_down != ctrl_held {
-                ctrl_held = key_down;
+            let ctrl_down = unsafe { GetAsyncKeyState(VK_RCONTROL) } as u16 & 0x8000 != 0;
+            let shift_down = unsafe { GetAsyncKeyState(VK_RSHIFT) } as u16 & 0x8000 != 0;
+
+            if shift_down != shift_held {
+                shift_held = shift_down;
                 let sess = session_hook.lock().clone();
                 if let Some(sess) = sess {
-                    if key_down {
-                        sess.start_recording();
-                    } else {
+                    if shift_down {
+                        if active_mode.is_none() {
+                            active_mode = Some(true);
+                            sess.start_recording(true);
+                        }
+                    } else if active_mode == Some(true) {
+                        active_mode = None;
+                        sess.stop_recording_and_process();
+                    }
+                }
+            }
+
+            if ctrl_down != ctrl_held {
+                ctrl_held = ctrl_down;
+                let sess = session_hook.lock().clone();
+                if let Some(sess) = sess {
+                    if ctrl_down {
+                        if active_mode.is_none() {
+                            active_mode = Some(false);
+                            sess.start_recording(false);
+                        }
+                    } else if active_mode == Some(false) {
+                        active_mode = None;
                         sess.stop_recording_and_process();
                     }
                 }
@@ -622,7 +645,7 @@ fn main() -> Result<()> {
             Ok(session) => {
                 *session_load.lock() = Some(Arc::new(session));
                 info!("All models loaded.");
-                info!("EVI 输入法已经上线! 按下右Ctrl键开始说话,说完后,松开.");
+                info!("EVI 输入法已经上线! 按下右Ctrl键开始说话,说完后,松开. 按住右Shift键说一句话可校准音量门控.");
             }
             Err(e) => {
                 error!("Failed to load models: {}", e);
@@ -645,11 +668,6 @@ fn main() -> Result<()> {
         if let Some(sess) = sess {
             if sess.recording.load(Ordering::SeqCst) {
                 sess.audio_source.lock().stop().ok();
-            }
-            if let Some(ref_e) = sess.vad.lock().get_reference_energy() {
-                if let Err(e) = Config::save_energy_gate_reference(Some(ref_e)) {
-                    log::warn!("Failed to save energy_gate_reference: {}", e);
-                }
             }
             sess.check_corrections();
         }
@@ -779,10 +797,13 @@ mod cg_key {
     use std::sync::Arc;
 
     const KVK_RIGHT_COMMAND: i64 = 0x36;
+    const KVK_RIGHT_SHIFT: i64 = 0x7C;
+    const KVK_RIGHT_SHIFT_ADB: i64 = 0x3C;
 
     pub fn start(proxy: Arc<Mutex<Option<tao::event_loop::EventLoopProxy<MacEvent>>>>) {
         let events = vec![CGEventType::FlagsChanged];
-        let prev_down = Cell::new(false);
+        let prev_cmd_down = Cell::new(false);
+        let prev_shift_down = Cell::new(false);
 
         let tap = core_graphics::event::CGEventTap::new(
             CGEventTapLocation::HID,
@@ -793,19 +814,34 @@ mod cg_key {
                 let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                 let flags = event.get_flags();
                 log::debug!("CGEvent: keycode={}, flags={:?}", keycode, flags);
-                if keycode != KVK_RIGHT_COMMAND {
-                    return None;
-                }
-                let now_down = event.get_flags().contains(CGEventFlags::CGEventFlagCommand);
-                let was_down = prev_down.replace(now_down);
-                if now_down != was_down {
-                    if let Some(ref p) = *proxy.lock() {
-                        if now_down {
-                            let _ = p.send_event(MacEvent::KeyDown);
-                        } else {
-                            let _ = p.send_event(MacEvent::KeyUp);
+                match keycode {
+                    KVK_RIGHT_COMMAND => {
+                        let now_down = flags.contains(CGEventFlags::CGEventFlagCommand);
+                        let was_down = prev_cmd_down.replace(now_down);
+                        if now_down != was_down {
+                            if let Some(ref p) = *proxy.lock() {
+                                if now_down {
+                                    let _ = p.send_event(MacEvent::KeyDown);
+                                } else {
+                                    let _ = p.send_event(MacEvent::KeyUp);
+                                }
+                            }
                         }
                     }
+                    KVK_RIGHT_SHIFT | KVK_RIGHT_SHIFT_ADB => {
+                        let now_down = flags.contains(CGEventFlags::CGEventFlagShift);
+                        let was_down = prev_shift_down.replace(now_down);
+                        if now_down != was_down {
+                            if let Some(ref p) = *proxy.lock() {
+                                if now_down {
+                                    let _ = p.send_event(MacEvent::CalKeyDown);
+                                } else {
+                                    let _ = p.send_event(MacEvent::CalKeyUp);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 None
             },
@@ -838,6 +874,8 @@ mod cg_key {
 enum MacEvent {
     KeyDown,
     KeyUp,
+    CalKeyDown,
+    CalKeyUp,
     ProcessingDone,
     UpdateTray,
     Quit,
@@ -902,10 +940,13 @@ fn main() -> Result<()> {
             "Restored energy_gate_enabled from config: {}",
             cfg.energy_gate_enabled
         );
+        vi::ui::set_energy_gate_db(cfg.energy_gate_db_offset);
+        info!(
+            "Restored energy_gate_db_offset from config: {}",
+            cfg.energy_gate_db_offset
+        );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
-        vi::ui::set_save_log_enabled(cfg.save_log);
-        info!("Restored save_log from config: {}", cfg.save_log);
         if !cfg.privacy_acknowledged {
             let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("evi"));
             let _ = std::process::Command::new(exe)
@@ -945,8 +986,16 @@ fn main() -> Result<()> {
     let refine_default_id = refine_default_item.id().clone();
     let coze_refine_item = MenuItem::new("网络大模型润色", true, None);
     let coze_id = coze_refine_item.id().clone();
-    let energy_gate_item = MenuItem::new("自适应能量门控", true, None);
+    let energy_gate_item = MenuItem::new("音量门控", true, None);
     let energy_gate_id = energy_gate_item.id().clone();
+    let gate_db3_item = MenuItem::new("3dB", true, None);
+    let gate_db3_id = gate_db3_item.id().clone();
+    let gate_db6_item = MenuItem::new("6dB", true, None);
+    let gate_db6_id = gate_db6_item.id().clone();
+    let gate_db12_item = MenuItem::new("12dB", true, None);
+    let gate_db12_id = gate_db12_item.id().clone();
+    let gate_db18_item = MenuItem::new("18dB", true, None);
+    let gate_db18_id = gate_db18_item.id().clone();
     let punc_item = MenuItem::new("智能标点", true, None);
     let punc_id = punc_item.id().clone();
     let set_key_item = MenuItem::new("设置 API Key", true, None);
@@ -962,6 +1011,7 @@ fn main() -> Result<()> {
             refine_default_item,
             coze_refine_item,
             energy_gate_item,
+            [gate_db3_item, gate_db6_item, gate_db12_item, gate_db18_item],
             punc_item,
             edit_db_item,
             set_key_item,
@@ -975,6 +1025,7 @@ fn main() -> Result<()> {
         let has_key = vi::secret::get_api_key().is_some();
         tray.update_refine_route(&vi::ui::get_refine_scheme(), has_key);
         tray.update_energy_gate(vi::ui::get_energy_gate_enabled());
+        tray.update_energy_gate_range(vi::ui::get_energy_gate_db());
         tray.update_punc(vi::ui::get_punc_enabled());
     }
 
@@ -995,6 +1046,18 @@ fn main() -> Result<()> {
         } else if event.id == energy_gate_id {
             let current = vi::ui::get_energy_gate_enabled();
             vi::ui::set_energy_gate_enabled(!current);
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == gate_db3_id {
+            vi::ui::set_energy_gate_db(3.0);
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == gate_db6_id {
+            vi::ui::set_energy_gate_db(6.0);
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == gate_db12_id {
+            vi::ui::set_energy_gate_db(12.0);
+            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
+        } else if event.id == gate_db18_id {
+            vi::ui::set_energy_gate_db(18.0);
             let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         } else if event.id == punc_id {
             let current = vi::ui::get_punc_enabled();
@@ -1029,6 +1092,7 @@ fn main() -> Result<()> {
         .expect("Failed to spawn key listener thread");
 
     let mut recording = false;
+    let mut calibrating = false;
     let mut processing = false;
 
     event_loop.run(move |event, _, control_flow| {
@@ -1036,14 +1100,22 @@ fn main() -> Result<()> {
 
         match event {
             Event::NewEvents(StartCause::Init) => {
-                info!("EVI 输入法已上线! 按住右Command键录音，松开识别。");
+                info!("EVI 输入法已上线! 按住右Command键录音，松开识别。按住右Shift键说一句话可校准音量门控。");
             }
 
             Event::UserEvent(MacEvent::KeyDown) => {
-                if !recording && !processing {
+                if !recording && !calibrating && !processing {
                     recording = true;
                     info!("Starting recording (Right Command)...");
-                    session.start_recording();
+                    session.start_recording(false);
+                }
+            }
+
+            Event::UserEvent(MacEvent::CalKeyDown) => {
+                if !recording && !calibrating && !processing {
+                    calibrating = true;
+                    info!("Starting calibration recording (Right Shift)...");
+                    session.start_recording(true);
                 }
             }
 
@@ -1064,6 +1136,23 @@ fn main() -> Result<()> {
                 }
             }
 
+            Event::UserEvent(MacEvent::CalKeyUp) => {
+                if calibrating && !processing {
+                    calibrating = false;
+                    processing = true;
+                    info!("Stopping calibration recording (Right Shift)...");
+                    let sess = session.clone();
+                    let done_proxy = proxy.clone();
+                    std::thread::Builder::new()
+                        .name("calibration-process".into())
+                        .spawn(move || {
+                            sess.stop_recording_and_process();
+                            let _ = done_proxy.send_event(MacEvent::ProcessingDone);
+                        })
+                        .expect("Failed to spawn calibration thread");
+                }
+            }
+
             Event::UserEvent(MacEvent::ProcessingDone) | Event::UserEvent(MacEvent::UpdateTray) => {
                 if let Event::UserEvent(MacEvent::ProcessingDone) = event {
                     processing = false;
@@ -1073,6 +1162,7 @@ fn main() -> Result<()> {
                 tray.update_refine_route(&scheme, has_key);
                 let gate_enabled = vi::ui::get_energy_gate_enabled();
                 tray.update_energy_gate(gate_enabled);
+                tray.update_energy_gate_range(vi::ui::get_energy_gate_db());
                 let punc_enabled = vi::ui::get_punc_enabled();
                 tray.update_punc(punc_enabled);
             }
@@ -1081,11 +1171,6 @@ fn main() -> Result<()> {
                 info!("Shutting down...");
                 if session.recording.load(Ordering::SeqCst) {
                     session.audio_source.lock().stop().ok();
-                }
-                if let Some(ref_e) = session.vad.lock().get_reference_energy() {
-                    if let Err(e) = Config::save_energy_gate_reference(Some(ref_e)) {
-                        log::warn!("Failed to save energy_gate_reference: {}", e);
-                    }
                 }
                 session.check_corrections();
                 *control_flow = ControlFlow::Exit;
@@ -1172,44 +1257,8 @@ fn main() -> Result<()> {
     if session.recording.load(Ordering::SeqCst) {
         session.audio_source.lock().stop().ok();
     }
-    if let Some(ref_e) = session.vad.lock().get_reference_energy() {
-        if let Err(e) = Config::save_energy_gate_reference(Some(ref_e)) {
-            log::warn!("Failed to save energy_gate_reference: {}", e);
-        }
-    }
     std::thread::sleep(Duration::from_secs(3));
     session.check_corrections();
     info!("Bye!");
-    Ok(())
-}
-
-fn save_wav(samples: &[i16], sample_rate: u32, seq: u64) -> Result<()> {
-    use std::io::Write;
-    let path = PathBuf::from(format!("log/{}.wav", seq));
-    let num_channels: u16 = 1;
-    let bits_per_sample: u16 = 16;
-    let byte_rate = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
-    let block_align = num_channels * bits_per_sample / 8;
-    let data_size = samples.len() * 2;
-    let file_size = 36 + data_size;
-
-    let mut f = std::fs::File::create(&path)?;
-    f.write_all(b"RIFF")?;
-    f.write_all(&(file_size as u32).to_le_bytes())?;
-    f.write_all(b"WAVE")?;
-    f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?;
-    f.write_all(&num_channels.to_le_bytes())?;
-    f.write_all(&sample_rate.to_le_bytes())?;
-    f.write_all(&byte_rate.to_le_bytes())?;
-    f.write_all(&block_align.to_le_bytes())?;
-    f.write_all(&bits_per_sample.to_le_bytes())?;
-    f.write_all(b"data")?;
-    f.write_all(&(data_size as u32).to_le_bytes())?;
-    for &s in samples {
-        f.write_all(&s.to_le_bytes())?;
-    }
-    info!("Saved audio to {}", path.display());
     Ok(())
 }

@@ -106,7 +106,6 @@ struct RefineEditorApp {
     api: Box<dyn RefineApi>,
     uuid: String,
     contribution: i32,
-    save_log: bool,
     base_height_set: bool,
     focus_requested: bool,
     ctx: Option<egui::Context>,
@@ -132,12 +131,10 @@ impl RefineEditorApp {
                 0
             }
         };
-        let save_log = crate::Config::load().map(|c| c.save_log).unwrap_or(true);
         let mut app = Self {
             api,
             uuid,
             contribution,
-            save_log,
             base_height_set: false,
             focus_requested: false,
             ctx: None,
@@ -436,13 +433,6 @@ impl eframe::App for RefineEditorApp {
                                         .size(12.0)
                                         .color(egui::Color32::from_rgb(50, 50, 50)),
                                 );
-                                ui.add_space(6.0);
-                                let mut save_log = self.save_log;
-                                ui.checkbox(&mut save_log, "记录对话（仅本地保存，不上传）");
-                                if save_log != self.save_log {
-                                    self.save_log = save_log;
-                                    crate::ui::set_save_log_enabled(save_log);
-                                }
                             });
                     });
                     ui.vertical(|ui| {

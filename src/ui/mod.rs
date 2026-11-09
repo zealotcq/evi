@@ -43,6 +43,20 @@ pub fn set_energy_gate_enabled(enabled: bool) {
     }
 }
 
+pub static ENERGY_GATE_DB: std::sync::LazyLock<parking_lot::RwLock<f64>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(12.0));
+
+pub fn get_energy_gate_db() -> f64 {
+    *ENERGY_GATE_DB.read()
+}
+
+pub fn set_energy_gate_db(db: f64) {
+    *ENERGY_GATE_DB.write() = db;
+    if let Err(e) = crate::Config::save_energy_gate_db_offset(db) {
+        log::warn!("Failed to save energy_gate_db_offset: {}", e);
+    }
+}
+
 pub static PUNC_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub fn get_punc_enabled() -> bool {
@@ -53,19 +67,6 @@ pub fn set_punc_enabled(enabled: bool) {
     PUNC_ENABLED.store(enabled, Ordering::SeqCst);
     if let Err(e) = crate::Config::save_punc_enabled(enabled) {
         log::warn!("Failed to save punc_enabled: {}", e);
-    }
-}
-
-pub static SAVE_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
-
-pub fn get_save_log_enabled() -> bool {
-    SAVE_LOG_ENABLED.load(Ordering::SeqCst)
-}
-
-pub fn set_save_log_enabled(enabled: bool) {
-    SAVE_LOG_ENABLED.store(enabled, Ordering::SeqCst);
-    if let Err(e) = crate::Config::save_save_log(enabled) {
-        log::warn!("Failed to save save_log: {}", e);
     }
 }
 

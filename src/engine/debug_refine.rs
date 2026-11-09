@@ -56,9 +56,6 @@ impl DebugRefine {
     }
 
     pub fn log_refine(&self, original: &str, refined: &str) {
-        if !crate::ui::get_save_log_enabled() {
-            return;
-        }
         if original.is_empty() || original.chars().count() <= 10 {
             return;
         }
