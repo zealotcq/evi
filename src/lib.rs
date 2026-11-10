@@ -118,6 +118,171 @@ impl fmt::Display for Recognized {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Calibration audio archive
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn calib_audio_dir() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    let dir = PathBuf::from(home).join(".evi").join("calib_audio");
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+pub fn save_wav_16k(path: &std::path::Path, samples: &[i16]) {
+    use std::io::Write;
+    let sr: u32 = 16000;
+    let data_size = samples.len() * 2;
+    if let Ok(mut f) = std::fs::File::create(path) {
+        let _ = f.write_all(b"RIFF");
+        let _ = f.write_all(&(36 + data_size as u32).to_le_bytes());
+        let _ = f.write_all(b"WAVE");
+        let _ = f.write_all(b"fmt ");
+        let _ = f.write_all(&16u32.to_le_bytes());
+        let _ = f.write_all(&1u16.to_le_bytes());
+        let _ = f.write_all(&1u16.to_le_bytes());
+        let _ = f.write_all(&sr.to_le_bytes());
+        let _ = f.write_all(&(sr * 2).to_le_bytes());
+        let _ = f.write_all(&2u16.to_le_bytes());
+        let _ = f.write_all(&16u16.to_le_bytes());
+        let _ = f.write_all(b"data");
+        let _ = f.write_all(&(data_size as u32).to_le_bytes());
+        for &x in samples {
+            let _ = f.write_all(&x.to_le_bytes());
+        }
+    }
+}
+
+pub fn load_wav_16k(path: &std::path::Path) -> Option<Vec<f32>> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return None;
+    }
+    Some(
+        data[44..]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+            .collect(),
+    )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VoiceRefEntry {
+    ts: String,
+    embedding: Vec<f64>,
+}
+
+fn voice_refs_path() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".evi").join("voice_refs.json")
+}
+
+pub fn load_voice_refs() -> Vec<(String, Vec<f32>)> {
+    let Ok(raw) = std::fs::read_to_string(voice_refs_path()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<VoiceRefEntry>>(&raw) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .map(|e| (e.ts, e.embedding.into_iter().map(|x| x as f32).collect()))
+        .collect()
+}
+
+pub fn save_voice_refs(refs: &[(String, Vec<f32>)]) {
+    let entries: Vec<VoiceRefEntry> = refs
+        .iter()
+        .map(|(ts, e)| VoiceRefEntry {
+            ts: ts.clone(),
+            embedding: e.iter().map(|&x| x as f64).collect(),
+        })
+        .collect();
+    if let Ok(out) = serde_json::to_string_pretty(&entries) {
+        let _ = std::fs::write(voice_refs_path(), out);
+    }
+}
+
+pub fn push_voice_ref(ts: &str, emb: &[f32]) {
+    let mut refs = load_voice_refs();
+    refs.push((ts.to_string(), emb.to_vec()));
+    let cut = refs.len().saturating_sub(3);
+    refs.drain(..cut);
+    let entries: Vec<VoiceRefEntry> = refs
+        .into_iter()
+        .map(|(ts, e)| VoiceRefEntry {
+            ts,
+            embedding: e.into_iter().map(|x| x as f64).collect(),
+        })
+        .collect();
+    if let Ok(out) = serde_json::to_string_pretty(&entries) {
+        let _ = std::fs::write(voice_refs_path(), out);
+    }
+}
+
+pub fn calib_timestamp() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let days = d.as_secs() / 86400;
+    let tod = d.as_secs() % 86400;
+    let (y, mo, dd) = days_to_ymd(days);
+    format!(
+        "{:04}{:02}{:02}_{:02}{:02}{:02}",
+        y,
+        mo,
+        dd,
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+fn days_to_ymd(d: u64) -> (u64, u64, u64) {
+    let mut y = 1970u64;
+    let mut r = d;
+    loop {
+        let dy = if y.is_multiple_of(4) && !y.is_multiple_of(100) || y.is_multiple_of(400) {
+            366
+        } else {
+            365
+        };
+        if r < dy {
+            break;
+        }
+        r -= dy;
+        y += 1;
+    }
+    let leap = y.is_multiple_of(4) && !y.is_multiple_of(100) || y.is_multiple_of(400);
+    let md = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0;
+    for &days in &md {
+        if r < days {
+            break;
+        }
+        r -= days;
+        m += 1;
+    }
+    (y, m + 1, r + 1)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Text Management
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -269,12 +434,12 @@ pub struct Config {
     pub refine_scheme: String,
     #[serde(default = "default_true")]
     pub punc_enabled: bool,
-    #[serde(default = "default_true")]
-    pub energy_gate_enabled: bool,
-    #[serde(default = "default_energy_gate_db_offset")]
-    pub energy_gate_db_offset: f64,
     #[serde(default)]
-    pub energy_gate_reference: Option<f64>,
+    pub voice_gate_enabled: bool,
+    #[serde(default = "default_voice_gate_threshold")]
+    pub voice_gate_threshold: f64,
+    #[serde(default)]
+    pub voice_gate_embedding: Option<Vec<f64>>,
     #[serde(default)]
     pub server_url: Option<String>,
     #[serde(default = "default_false")]
@@ -302,8 +467,8 @@ fn default_active_scheme() -> Option<String> {
 fn default_trailing_punct() -> String {
     ",".to_string()
 }
-fn default_energy_gate_db_offset() -> f64 {
-    12.0
+fn default_voice_gate_threshold() -> f64 {
+    0.45
 }
 fn default_refine_scheme() -> String {
     "default".to_string()
@@ -422,7 +587,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn save_energy_gate_enabled(enabled: bool) -> Result<()> {
+    pub fn save_voice_gate_enabled(val: bool) -> Result<()> {
         let config_path = Self::home_config_path();
         if !config_path.exists() {
             let exe_dir = get_exe_dir()?;
@@ -437,7 +602,7 @@ impl Config {
         let mut json: Value = serde_json::from_str(&raw)
             .with_context(|| format!("Failed to parse {}", config_path.display()))?;
         if let Some(obj) = json.as_object_mut() {
-            obj.insert("energy_gate_enabled".to_string(), Value::Bool(enabled));
+            obj.insert("voice_gate_enabled".to_string(), Value::Bool(val));
         }
         let out =
             serde_json::to_string_pretty(&json).with_context(|| "Failed to serialize config")?;
@@ -446,7 +611,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn save_energy_gate_db_offset(val: f64) -> Result<()> {
+    pub fn save_voice_gate_threshold(val: f64) -> Result<()> {
         let config_path = Self::home_config_path();
         if !config_path.exists() {
             let exe_dir = get_exe_dir()?;
@@ -461,7 +626,7 @@ impl Config {
         let mut json: Value = serde_json::from_str(&raw)
             .with_context(|| format!("Failed to parse {}", config_path.display()))?;
         if let Some(obj) = json.as_object_mut() {
-            obj.insert("energy_gate_db_offset".to_string(), Value::from(val));
+            obj.insert("voice_gate_threshold".to_string(), Value::from(val));
         }
         let out =
             serde_json::to_string_pretty(&json).with_context(|| "Failed to serialize config")?;
@@ -470,7 +635,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn save_energy_gate_reference(val: Option<f64>) -> Result<()> {
+    pub fn save_voice_gate_embedding(val: Option<&[f32]>) -> Result<()> {
         let config_path = Self::home_config_path();
         if !config_path.exists() {
             let exe_dir = get_exe_dir()?;
@@ -487,10 +652,14 @@ impl Config {
         if let Some(obj) = json.as_object_mut() {
             match val {
                 Some(v) => {
-                    obj.insert("energy_gate_reference".to_string(), Value::from(v));
+                    let arr: Vec<f64> = v.iter().map(|&x| x as f64).collect();
+                    obj.insert(
+                        "voice_gate_embedding".to_string(),
+                        serde_json::to_value(&arr)?,
+                    );
                 }
                 None => {
-                    obj.remove("energy_gate_reference");
+                    obj.remove("voice_gate_embedding");
                 }
             }
         }
@@ -500,7 +669,6 @@ impl Config {
             .with_context(|| format!("Failed to write {}", config_path.display()))?;
         Ok(())
     }
-
     pub fn save_punc_enabled(enabled: bool) -> Result<()> {
         let config_path = Self::home_config_path();
         if !config_path.exists() {

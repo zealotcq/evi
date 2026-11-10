@@ -9,6 +9,7 @@ pub mod llm_remote;
 pub mod paraformer;
 pub mod punc;
 pub mod segmenter;
+pub mod speaker;
 pub mod vad;
 
 pub use correction::FileCorrectionStore;

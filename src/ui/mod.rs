@@ -30,30 +30,30 @@ pub fn set_refine_scheme(scheme: &str) {
     }
 }
 
-pub static ENERGY_GATE_ENABLED: AtomicBool = AtomicBool::new(true);
+pub static VOICE_GATE_ENABLED: AtomicBool = AtomicBool::new(false);
 
-pub fn get_energy_gate_enabled() -> bool {
-    ENERGY_GATE_ENABLED.load(Ordering::SeqCst)
+pub fn get_voice_gate_enabled() -> bool {
+    VOICE_GATE_ENABLED.load(Ordering::SeqCst)
 }
 
-pub fn set_energy_gate_enabled(enabled: bool) {
-    ENERGY_GATE_ENABLED.store(enabled, Ordering::SeqCst);
-    if let Err(e) = crate::Config::save_energy_gate_enabled(enabled) {
-        log::warn!("Failed to save energy_gate_enabled: {}", e);
+pub fn set_voice_gate_enabled(enabled: bool) {
+    VOICE_GATE_ENABLED.store(enabled, Ordering::SeqCst);
+    if let Err(e) = crate::Config::save_voice_gate_enabled(enabled) {
+        log::warn!("Failed to save voice_gate_enabled: {}", e);
     }
 }
 
-pub static ENERGY_GATE_DB: std::sync::LazyLock<parking_lot::RwLock<f64>> =
-    std::sync::LazyLock::new(|| parking_lot::RwLock::new(12.0));
+pub static VOICE_GATE_THRESHOLD: std::sync::LazyLock<parking_lot::RwLock<f64>> =
+    std::sync::LazyLock::new(|| parking_lot::RwLock::new(0.45));
 
-pub fn get_energy_gate_db() -> f64 {
-    *ENERGY_GATE_DB.read()
+pub fn get_voice_gate_threshold() -> f64 {
+    *VOICE_GATE_THRESHOLD.read()
 }
 
-pub fn set_energy_gate_db(db: f64) {
-    *ENERGY_GATE_DB.write() = db;
-    if let Err(e) = crate::Config::save_energy_gate_db_offset(db) {
-        log::warn!("Failed to save energy_gate_db_offset: {}", e);
+pub fn set_voice_gate_threshold(val: f64) {
+    *VOICE_GATE_THRESHOLD.write() = val;
+    if let Err(e) = crate::Config::save_voice_gate_threshold(val) {
+        log::warn!("Failed to save voice_gate_threshold: {}", e);
     }
 }
 

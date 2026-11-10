@@ -24,6 +24,7 @@ use vi::engine::debug_refine::DebugRefine;
 use vi::engine::paraformer::AsrEngine;
 use vi::engine::punc::PuncEngine;
 use vi::engine::segmenter::segment_audio;
+use vi::engine::speaker::{default_model_path, SpeakerEngine};
 use vi::engine::vad::VadEngine;
 use vi::refine_mgr::RefineManager;
 use vi::ui::log_capture::CaptureLogger;
@@ -62,6 +63,8 @@ struct Session {
     asr: Mutex<AsrEngine>,
     dr: Mutex<DebugRefine>,
     refine_mgr: Mutex<RefineManager>,
+    speaker: Mutex<Option<SpeakerEngine>>,
+    voice_refs: Mutex<Vec<Vec<f32>>>,
     correction: FileCorrectionStore,
     recording: AtomicBool,
     calibrating: AtomicBool,
@@ -77,12 +80,7 @@ impl Session {
         let punc_dir = crate::models::punc_model_dir(&base);
 
         debug!("Loading VAD model from {}...", vad_dir.display());
-        let vad = VadEngine::new(
-            &vad_dir,
-            cfg.energy_gate_enabled,
-            cfg.energy_gate_db_offset,
-            cfg.energy_gate_reference,
-        )?;
+        let vad = VadEngine::new(&vad_dir)?;
         debug!("Loading ASR model from {}...", asr_dir.display());
         let asr = AsrEngine::new(&asr_dir)?;
         debug!("Loading Punc model from {}...", punc_dir.display());
@@ -96,7 +94,28 @@ impl Session {
         let text_session = vi::text::tsf::create_platform_session()?;
         let correction = FileCorrectionStore::new("refine_log")?;
 
+        let sp_path = default_model_path();
+        let speaker = if sp_path.exists() {
+            match SpeakerEngine::new(&sp_path) {
+                Ok(sp) => {
+                    info!("Speaker model loaded.");
+                    Some(sp)
+                }
+                Err(e) => {
+                    warn!("Speaker model load failed: {e}");
+                    None
+                }
+            }
+        } else {
+            info!("Speaker model not found, voice gate inactive.");
+            None
+        };
+        let voice_refs: Vec<Vec<f32>> = vi::load_voice_refs().into_iter().map(|(_, e)| e).collect();
+        info!("Voice gate references: {}", voice_refs.len());
+
         Ok(Self {
+            speaker: Mutex::new(speaker),
+            voice_refs: Mutex::new(voice_refs),
             audio_source: Mutex::new(audio_source),
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
@@ -118,12 +137,7 @@ impl Session {
         let punc_dir = crate::models::punc_model_dir(&base);
 
         debug!("Loading VAD model from {}...", vad_dir.display());
-        let vad = VadEngine::new(
-            &vad_dir,
-            _cfg.energy_gate_enabled,
-            _cfg.energy_gate_db_offset,
-            _cfg.energy_gate_reference,
-        )?;
+        let vad = VadEngine::new(&vad_dir)?;
         debug!("Loading ASR model from {}...", asr_dir.display());
         let asr = AsrEngine::new(&asr_dir)?;
         debug!("Loading Punc model from {}...", punc_dir.display());
@@ -176,7 +190,28 @@ impl Session {
 
         let correction = FileCorrectionStore::new("refine_log")?;
 
+        let sp_path = default_model_path();
+        let speaker = if sp_path.exists() {
+            match SpeakerEngine::new(&sp_path) {
+                Ok(sp) => {
+                    info!("Speaker model loaded.");
+                    Some(sp)
+                }
+                Err(e) => {
+                    warn!("Speaker model load failed: {e}");
+                    None
+                }
+            }
+        } else {
+            info!("Speaker model not found, voice gate inactive.");
+            None
+        };
+        let voice_refs: Vec<Vec<f32>> = vi::load_voice_refs().into_iter().map(|(_, e)| e).collect();
+        info!("Voice gate references: {}", voice_refs.len());
+
         Ok(Self {
+            speaker: Mutex::new(speaker),
+            voice_refs: Mutex::new(voice_refs),
             audio_source: Mutex::new(audio_source),
             text_session: Mutex::new(text_session),
             vad: Mutex::new(vad),
@@ -194,11 +229,6 @@ impl Session {
         if self.recording.load(Ordering::SeqCst) {
             return;
         }
-        {
-            let mut vad = self.vad.lock();
-            vad.set_energy_gate_enabled(vi::ui::get_energy_gate_enabled());
-            vad.set_energy_gate_db_offset(vi::ui::get_energy_gate_db());
-        }
         self.calibrating.store(calibrate, Ordering::SeqCst);
         if calibrate {
             debug!("Calibration recording started (Right Shift held)");
@@ -206,9 +236,8 @@ impl Session {
         } else {
             debug!("Recording started (Right Ctrl held)");
             log_event("RECORDING_START", "");
-            if vi::ui::get_energy_gate_enabled() && self.vad.lock().get_reference_energy().is_none()
-            {
-                info!("Volume gate enabled but not calibrated yet; hold Right Shift and speak to calibrate.");
+            if self.voice_refs.lock().is_empty() {
+                info!("Voice gate: no references yet; hold Right Shift and speak to calibrate.");
             }
         }
         self.results.lock().clear();
@@ -263,23 +292,34 @@ impl Session {
         debug!("Captured {:.1}s of audio", total_s);
 
         if calibrating {
-            let cal_result = self.vad.lock().calibrate_reference(&pcm);
-            match cal_result {
-                Ok(reference) => {
-                    self.vad.lock().set_energy_gate_reference(Some(reference));
-                    if let Err(e) = Config::save_energy_gate_reference(Some(reference)) {
-                        warn!("Failed to save energy_gate_reference: {e}");
+            let analysis = self.vad.lock().analyze(&pcm).ok().flatten();
+            if let Some(segments) = analysis {
+                let mut speech = Vec::new();
+                for seg in &segments {
+                    let s0 = (seg.start_ms as f64 / 1000.0 * 16000.0) as usize;
+                    let s1 = ((seg.end_ms as f64 / 1000.0 * 16000.0) as usize).min(pcm.len());
+                    if s1 > s0 {
+                        speech.extend_from_slice(&pcm[s0..s1]);
                     }
-                    if !vi::ui::get_energy_gate_enabled() {
-                        vi::ui::set_energy_gate_enabled(true);
-                        info!("Volume gate auto-enabled after calibration");
-                    }
-                    info!("Volume gate calibrated: reference energy {:.6}", reference);
-                    log_event("CALIBRATION_DONE", &format!("{:.6}", reference));
                 }
-                Err(e) => {
-                    warn!("Volume calibration failed: {e}");
-                    log_event("CALIBRATION_FAILED", &e.to_string());
+                if !speech.is_empty() {
+                    let emb = {
+                        let mut guard = self.speaker.lock();
+                        match guard.as_mut() {
+                            Some(sp) => sp.embed(&speech).ok(),
+                            None => None,
+                        }
+                    };
+                    if let Some(emb) = emb {
+                        vi::push_voice_ref(&vi::calib_timestamp(), &emb);
+                        *self.voice_refs.lock() =
+                            vi::load_voice_refs().into_iter().map(|(_, e)| e).collect();
+                        info!(
+                            "Voice gate: reference saved ({} refs)",
+                            self.voice_refs.lock().len()
+                        );
+                        log_event("VOICE_REF_SAVED", "");
+                    }
                 }
             }
         }
@@ -297,13 +337,40 @@ impl Session {
             return;
         }
 
-        let gate_ranges: Vec<(u64, u64)> =
-            segments.iter().map(|s| (s.start_ms, s.end_ms)).collect();
-        let gate_allowed = self.vad.lock().gate_allows(&pcm, &gate_ranges);
-        if !gate_allowed {
-            info!("Volume gate: recording volume outside calibrated range, discarded");
-            log_event("GATE_REJECTED", "");
-            return;
+        if vi::ui::get_voice_gate_enabled() {
+            let refs = self.voice_refs.lock().clone();
+            if refs.is_empty() {
+                info!("Voice gate enabled but no references; hold Right Shift to calibrate");
+            } else {
+                let mut speech = Vec::new();
+                for seg in &segments {
+                    speech.extend_from_slice(&seg.samples);
+                }
+                let allowed = {
+                    let mut sp_guard = self.speaker.lock();
+                    match sp_guard.as_mut() {
+                        Some(sp) => match sp.embed(&speech) {
+                            Ok(emb) => {
+                                let thr = vi::ui::get_voice_gate_threshold();
+                                let sims: Vec<f32> = refs
+                                    .iter()
+                                    .map(|r| SpeakerEngine::cosine(r, &emb))
+                                    .collect();
+                                let pass = sims.iter().any(|&s| s as f64 >= thr);
+                                info!("Voice gate: sims {:?} threshold {} -> {}", sims, thr, pass);
+                                pass
+                            }
+                            Err(_) => true,
+                        },
+                        None => true,
+                    }
+                };
+                if !allowed {
+                    info!("Voice gate: recording rejected (no reference matched)");
+                    log_event("VOICE_GATE_REJECTED", "");
+                    return;
+                }
+            }
         }
 
         for seg in &segments {
@@ -504,15 +571,15 @@ fn main() -> Result<()> {
         };
         vi::ui::set_refine_scheme(&scheme);
         info!("Restored refine_scheme from config: {}", scheme);
-        vi::ui::set_energy_gate_enabled(cfg.energy_gate_enabled);
+        vi::ui::set_voice_gate_enabled(cfg.voice_gate_enabled);
         info!(
-            "Restored energy_gate_enabled from config: {}",
-            cfg.energy_gate_enabled
+            "Restored voice_gate_enabled from config: {}",
+            cfg.voice_gate_enabled
         );
-        vi::ui::set_energy_gate_db(cfg.energy_gate_db_offset);
+        vi::ui::set_voice_gate_threshold(cfg.voice_gate_threshold);
         info!(
-            "Restored energy_gate_db_offset from config: {}",
-            cfg.energy_gate_db_offset
+            "Restored voice_gate_threshold from config: {}",
+            cfg.voice_gate_threshold
         );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
@@ -935,15 +1002,15 @@ fn main() -> Result<()> {
         };
         vi::ui::set_refine_scheme(&scheme);
         info!("Restored refine_scheme from config: {}", scheme);
-        vi::ui::set_energy_gate_enabled(cfg.energy_gate_enabled);
+        vi::ui::set_voice_gate_enabled(cfg.voice_gate_enabled);
         info!(
-            "Restored energy_gate_enabled from config: {}",
-            cfg.energy_gate_enabled
+            "Restored voice_gate_enabled from config: {}",
+            cfg.voice_gate_enabled
         );
-        vi::ui::set_energy_gate_db(cfg.energy_gate_db_offset);
+        vi::ui::set_voice_gate_threshold(cfg.voice_gate_threshold);
         info!(
-            "Restored energy_gate_db_offset from config: {}",
-            cfg.energy_gate_db_offset
+            "Restored voice_gate_threshold from config: {}",
+            cfg.voice_gate_threshold
         );
         vi::ui::set_punc_enabled(cfg.punc_enabled);
         info!("Restored punc_enabled from config: {}", cfg.punc_enabled);
@@ -986,16 +1053,8 @@ fn main() -> Result<()> {
     let refine_default_id = refine_default_item.id().clone();
     let coze_refine_item = MenuItem::new("网络大模型润色", true, None);
     let coze_id = coze_refine_item.id().clone();
-    let energy_gate_item = MenuItem::new("音量门控", true, None);
-    let energy_gate_id = energy_gate_item.id().clone();
-    let gate_db3_item = MenuItem::new("3dB", true, None);
-    let gate_db3_id = gate_db3_item.id().clone();
-    let gate_db6_item = MenuItem::new("6dB", true, None);
-    let gate_db6_id = gate_db6_item.id().clone();
-    let gate_db12_item = MenuItem::new("12dB", true, None);
-    let gate_db12_id = gate_db12_item.id().clone();
-    let gate_db18_item = MenuItem::new("18dB", true, None);
-    let gate_db18_id = gate_db18_item.id().clone();
+    let voice_gate_item = MenuItem::new("声纹门控", true, None);
+    let voice_gate_id = voice_gate_item.id().clone();
     let punc_item = MenuItem::new("智能标点", true, None);
     let punc_id = punc_item.id().clone();
     let set_key_item = MenuItem::new("设置 API Key", true, None);
@@ -1010,8 +1069,7 @@ fn main() -> Result<()> {
             quit_item,
             refine_default_item,
             coze_refine_item,
-            energy_gate_item,
-            [gate_db3_item, gate_db6_item, gate_db12_item, gate_db18_item],
+            voice_gate_item,
             punc_item,
             edit_db_item,
             set_key_item,
@@ -1024,8 +1082,7 @@ fn main() -> Result<()> {
     {
         let has_key = vi::secret::get_api_key().is_some();
         tray.update_refine_route(&vi::ui::get_refine_scheme(), has_key);
-        tray.update_energy_gate(vi::ui::get_energy_gate_enabled());
-        tray.update_energy_gate_range(vi::ui::get_energy_gate_db());
+        tray.update_voice_gate(vi::ui::get_voice_gate_enabled());
         tray.update_punc(vi::ui::get_punc_enabled());
     }
 
@@ -1043,21 +1100,9 @@ fn main() -> Result<()> {
                 vi::ui::set_refine_scheme("llm_remote");
             }
             let _ = menu_proxy.send_event(MacEvent::UpdateTray);
-        } else if event.id == energy_gate_id {
-            let current = vi::ui::get_energy_gate_enabled();
-            vi::ui::set_energy_gate_enabled(!current);
-            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
-        } else if event.id == gate_db3_id {
-            vi::ui::set_energy_gate_db(3.0);
-            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
-        } else if event.id == gate_db6_id {
-            vi::ui::set_energy_gate_db(6.0);
-            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
-        } else if event.id == gate_db12_id {
-            vi::ui::set_energy_gate_db(12.0);
-            let _ = menu_proxy.send_event(MacEvent::UpdateTray);
-        } else if event.id == gate_db18_id {
-            vi::ui::set_energy_gate_db(18.0);
+        } else if event.id == voice_gate_id {
+            let current = vi::ui::get_voice_gate_enabled();
+            vi::ui::set_voice_gate_enabled(!current);
             let _ = menu_proxy.send_event(MacEvent::UpdateTray);
         } else if event.id == punc_id {
             let current = vi::ui::get_punc_enabled();
@@ -1160,9 +1205,7 @@ fn main() -> Result<()> {
                 let has_key = vi::secret::get_api_key().is_some();
                 let scheme = vi::ui::get_refine_scheme();
                 tray.update_refine_route(&scheme, has_key);
-                let gate_enabled = vi::ui::get_energy_gate_enabled();
-                tray.update_energy_gate(gate_enabled);
-                tray.update_energy_gate_range(vi::ui::get_energy_gate_db());
+                tray.update_voice_gate(vi::ui::get_voice_gate_enabled());
                 let punc_enabled = vi::ui::get_punc_enabled();
                 tray.update_punc(punc_enabled);
             }

@@ -9,11 +9,7 @@ const ID_TIMER_HIDE: usize = 2001;
 const ID_TRAY_SHOW: usize = 1001;
 const ID_TRAY_REFINE_DEFAULT: usize = 1010;
 const ID_TRAY_COZE_REFINE: usize = 1003;
-const ID_TRAY_ENERGY_GATE: usize = 1005;
-const ID_TRAY_GATE_DB3: usize = 1014;
-const ID_TRAY_GATE_DB6: usize = 1015;
-const ID_TRAY_GATE_DB12: usize = 1016;
-const ID_TRAY_GATE_DB18: usize = 1017;
+const ID_TRAY_VOICE_GATE: usize = 1005;
 const ID_TRAY_PUNC: usize = 1009;
 const ID_TRAY_SET_KEY: usize = 1004;
 const ID_TRAY_EXIT: usize = 1002;
@@ -141,21 +137,9 @@ unsafe extern "system" fn subclass_wndproc(
                         crate::ui::set_refine_scheme("llm_remote");
                     }
                 }
-                ID_TRAY_ENERGY_GATE => {
-                    let enabled = !crate::ui::get_energy_gate_enabled();
-                    crate::ui::set_energy_gate_enabled(enabled);
-                }
-                ID_TRAY_GATE_DB3 => {
-                    crate::ui::set_energy_gate_db(3.0);
-                }
-                ID_TRAY_GATE_DB6 => {
-                    crate::ui::set_energy_gate_db(6.0);
-                }
-                ID_TRAY_GATE_DB12 => {
-                    crate::ui::set_energy_gate_db(12.0);
-                }
-                ID_TRAY_GATE_DB18 => {
-                    crate::ui::set_energy_gate_db(18.0);
+                ID_TRAY_VOICE_GATE => {
+                    let enabled = !crate::ui::get_voice_gate_enabled();
+                    crate::ui::set_voice_gate_enabled(enabled);
                 }
                 ID_TRAY_PUNC => {
                     let enabled = !crate::ui::get_punc_enabled();
@@ -274,45 +258,14 @@ unsafe fn show_tray_menu(hwnd: HWND) {
         let _ = DestroyMenu(refine_sub);
     }
 
-    let gate_text: Vec<u16> = "音量门控\0".encode_utf16().collect();
+    let gate_text: Vec<u16> = "声纹门控\0".encode_utf16().collect();
     let gate_ptr = PCWSTR(gate_text.as_ptr());
-    let gate_checked = crate::ui::get_energy_gate_enabled();
+    let gate_checked = crate::ui::get_voice_gate_enabled();
     let _ = AppendMenuW(
         menu,
         MF_STRING | if gate_checked { MF_CHECKED } else { MF_STRING },
-        ID_TRAY_ENERGY_GATE,
+        ID_TRAY_VOICE_GATE,
         gate_ptr,
-    );
-
-    let db_menu = match CreatePopupMenu() {
-        Ok(m) => m,
-        Err(_) => {
-            let _ = DestroyMenu(menu);
-            return;
-        }
-    };
-    let db_val = crate::ui::get_energy_gate_db();
-    let db_opts: [(usize, &str, f64); 4] = [
-        (ID_TRAY_GATE_DB3, "3dB", 3.0),
-        (ID_TRAY_GATE_DB6, "6dB", 6.0),
-        (ID_TRAY_GATE_DB12, "12dB", 12.0),
-        (ID_TRAY_GATE_DB18, "18dB", 18.0),
-    ];
-    for (id, text, val) in db_opts {
-        let t: Vec<u16> = format!("{}\0", text).encode_utf16().collect();
-        let _ = AppendMenuW(
-            db_menu,
-            MF_STRING | if val == db_val { MF_CHECKED } else { MF_STRING },
-            id,
-            PCWSTR(t.as_ptr()),
-        );
-    }
-    let range_text: Vec<u16> = "音量范围\0".encode_utf16().collect();
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING | MF_POPUP,
-        db_menu.0 as usize,
-        PCWSTR(range_text.as_ptr()),
     );
 
     let punc_text: Vec<u16> = "智能标点\0".encode_utf16().collect();
