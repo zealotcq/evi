@@ -83,10 +83,16 @@ const REQUIRED_MODEL_SUBDIRS: &[&str] = &[
     "iic/speech_fsmn_vad_zh-cn-16k-common-onnx",
     "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx",
     "iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
+    "echo0hello/speech_campplus_sv_zh_en_16k-common_advanced-onnx",
 ];
 
 fn has_onnx_model(dir: &std::path::Path) -> bool {
-    dir.join("model.onnx").exists() || dir.join("model_quant.onnx").exists()
+    dir.join("model.onnx").exists()
+        || dir.join("model_quant.onnx").exists()
+        || dir
+            .join("onnx")
+            .join("speech_campplus_sv_zh_en_16k-common_advanced.onnx")
+            .exists()
 }
 
 pub fn models_found(cfg: &crate::Config) -> bool {

@@ -9,7 +9,9 @@ use std::sync::Arc;
 const VAD_MODEL: &str = "iic/speech_fsmn_vad_zh-cn-16k-common-onnx";
 const ASR_MODEL: &str = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx";
 const PUNC_MODEL: &str = "iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx";
-const REQUIRED_MODELS: &[&str] = &[VAD_MODEL, ASR_MODEL, PUNC_MODEL];
+const SPEAKER_MODEL: &str = "echo0hello/speech_campplus_sv_zh_en_16k-common_advanced-onnx";
+const SPEAKER_ONNX: &str = "speech_campplus_sv_zh_en_16k-common_advanced.onnx";
+const REQUIRED_MODELS: &[&str] = &[VAD_MODEL, ASR_MODEL, PUNC_MODEL, SPEAKER_MODEL];
 
 const FILES_API: &str = "https://modelscope.cn/api/v1/models";
 const DOWNLOAD_BASE: &str = "https://modelscope.cn/models";
@@ -66,7 +68,18 @@ fn model_onnx_exists(dir: &Path) -> bool {
 }
 
 fn is_model_ready(model_id: &str) -> bool {
-    model_onnx_exists(&models_download_dir().join(model_id))
+    let dir = models_download_dir().join(model_id);
+    if model_id == SPEAKER_MODEL {
+        return dir.join("onnx").join(SPEAKER_ONNX).exists();
+    }
+    model_onnx_exists(&dir)
+}
+
+fn file_needed(model_id: &str, path: &str) -> bool {
+    if model_id == SPEAKER_MODEL {
+        return path.starts_with("onnx/");
+    }
+    true
 }
 
 fn missing_models() -> Vec<&'static str> {
@@ -282,6 +295,9 @@ pub fn download_required_models() -> Result<()> {
         let files = fetch_file_list(model_id)?;
         println!("  {} files to download", files.len());
         for file in &files {
+            if !file_needed(model_id, &file.path) {
+                continue;
+            }
             let fake_logs = Arc::new(Mutex::new(Vec::new()));
             download_file(model_id, file, &dest_dir, &fake_logs)?;
         }
@@ -315,6 +331,9 @@ fn download_to_channel(logs: Arc<Mutex<Vec<String>>>) -> Result<()> {
         })?;
 
         for file in &files {
+            if !file_needed(model_id, &file.path) {
+                continue;
+            }
             download_file(model_id, file, &dest_dir, &logs).map_err(|e| {
                 logs.lock().push(format!("下载失败: {:?}", e));
                 e

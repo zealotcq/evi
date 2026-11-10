@@ -16,9 +16,15 @@ pub fn default_model_path() -> std::path::PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home)
-        .join(".cache/modelscope/hub/models/echo0hello")
-        .join("speech_campplus_sv_zh_en_16k-common_advanced.onnx")
+    let base = std::path::PathBuf::from(home).join(".cache/modelscope/hub/models/echo0hello");
+    let canonical = base
+        .join("speech_campplus_sv_zh_en_16k-common_advanced-onnx")
+        .join("onnx")
+        .join("speech_campplus_sv_zh_en_16k-common_advanced.onnx");
+    if canonical.exists() {
+        return canonical;
+    }
+    base.join("speech_campplus_sv_zh_en_16k-common_advanced.onnx")
 }
 
 pub struct SpeakerEngine {
